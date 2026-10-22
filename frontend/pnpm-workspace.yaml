@@ -1,0 +1,12 @@
+# =====================================================================
+# SOC-Lite · Configuración de pnpm
+#
+# pnpm ≥ 10 no ejecuta los scripts de post-instalación de las dependencias
+# salvo autorización explícita (defensa contra ataques de cadena de suministro).
+# `esbuild` (usado por Vite) necesita su postinstall para enlazar el binario
+# nativo de la plataforma; es la única dependencia autorizada.
+#
+# Referencia: https://pnpm.io/settings
+# =====================================================================
+allowBuilds:
+  esbuild: true

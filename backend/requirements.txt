@@ -1,0 +1,64 @@
+# =====================================================================
+# SOC-Lite · Backend FastAPI — dependencias
+# Python 3.11+ / 3.12
+# =====================================================================
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+gunicorn==23.0.0
+
+# --- Base de datos ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+psycopg2-binary==2.9.10          # jobs síncronos / Alembic offline
+
+# --- Validación y configuración ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+
+# --- Seguridad ---
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+python-jose[cryptography]==3.3.0
+pyotp==2.9.0                     # MFA TOTP
+
+# --- Clientes HTTP (integraciones) ---
+httpx==0.28.1
+tenacity==9.0.0                  # reintentos con backoff
+
+# --- Reportes exportables ---
+reportlab==4.2.5                 # PDF
+python-docx==1.1.2               # Word
+openpyxl==3.1.5                  # Excel
+xlsxwriter==1.4.5                # Excel con formato avanzado
+Jinja2==3.1.5                    # plantillas de reportes
+matplotlib==3.10.0               # gráficos embebidos en PDF/Word
+
+# --- Caché y colas ---
+redis==5.2.1
+hiredis==3.1.0
+celery==5.4.0                    # tareas asíncronas (reportes pesados)
+
+# --- Observabilidad ---
+structlog==24.4.0
+prometheus-fastapi-instrumentator==7.0.2
+sentry-sdk[fastapi]==2.19.2
+
+# --- Utilidades ---
+python-dateutil==2.9.0.post0
+pytz==2024.2
+orjson==3.10.13
+python-slugify==8.0.4
+cryptography==44.0.0
+
+# --- Desarrollo / pruebas ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+#httpx==0.28.1
+faker==33.1.0
+ruff==0.8.4
+mypy==1.14.0

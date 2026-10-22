@@ -1,0 +1,489 @@
+{
+  "name": "SOC-Lite · 05 · Generación de reporte operativo semanal (lunes 07:00)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000001",
+      "name": "1 · Schedule semanal lunes 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        320
+      ],
+      "notes": "Schedule Trigger semanal: lunes 07:00 (cron '0 7 * * 1', zona America/Santiago)."
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "BACKEND_BASE_URL",
+              "value": "http://backend:8000/api/v1"
+            },
+            {
+              "name": "REPORT_TYPE",
+              "value": "operational"
+            },
+            {
+              "name": "REPORT_FORMAT",
+              "value": "pdf"
+            },
+            {
+              "name": "REPORT_PERIOD_DAYS",
+              "value": "7"
+            },
+            {
+              "name": "REPORT_STORAGE_DIR",
+              "value": "/data/reports/soc-lite"
+            },
+            {
+              "name": "REPORT_PUBLIC_BASE_URL",
+              "value": "https://n8n.org.local/files/reports"
+            },
+            {
+              "name": "REPORT_RECIPIENTS",
+              "value": "soc_manager@org.local,ciso@org.local"
+            },
+            {
+              "name": "REPORT_SLACK_CHANNEL",
+              "value": "#soc-reportes"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e5000000-0000-4000-8000-0000000000c0",
+      "name": "C · Set parámetros de reporte",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        320
+      ],
+      "notes": "Parámetros del reporte: tipo (operational), formato (pdf), ventana de 7 días, carpeta/S3 de destino y lista de destinatarios."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Ventana del reporte semanal y URLs de la API\n// =====================================================================\nconst cfg = $('C · Set parámetros de reporte').first().json;\nconst days = Number(cfg.REPORT_PERIOD_DAYS || 7);\nconst base = String($env.BACKEND_BASE_URL || cfg.BACKEND_BASE_URL || 'http://backend:8000/api/v1').replace(/\\/+$/, '');\n\nconst to = new Date();\nconst from = new Date(to.getTime() - days * 86400000);\nconst iso = (d) => d.toISOString().replace(/\\.\\d{3}Z$/, 'Z');\n\nconst body = {\n  from: iso(from),\n  to: iso(to),\n  format: String($env.REPORT_FORMAT || cfg.REPORT_FORMAT || 'pdf'),\n  report_type: String($env.REPORT_TYPE || cfg.REPORT_TYPE || 'operational'),\n  period_days: days\n};\n\nreturn [\n  {\n    json: {\n      report_type: body.report_type,\n      format: body.format,\n      period_from: body.from,\n      period_to: body.to,\n      period_days: days,\n      api_url: base + '/reports/' + body.report_type + '?format=' + body.format + '&from=' + encodeURIComponent(body.from) + '&to=' + encodeURIComponent(body.to),\n      inventory_url: base + '/reports/inventory?report_type=' + body.report_type + '&page=1&page_size=5',\n      auth_url: base + '/auth/login',\n      storage_dir: String($env.REPORT_STORAGE_DIR || cfg.REPORT_STORAGE_DIR || '/data/reports/soc-lite'),\n      public_base_url: String($env.REPORT_PUBLIC_BASE_URL || cfg.REPORT_PUBLIC_BASE_URL || '').replace(/\\/+$/, ''),\n      recipients: String($env.REPORT_RECIPIENTS || cfg.REPORT_RECIPIENTS || ''),\n      slack_channel: String($env.REPORT_SLACK_CHANNEL || cfg.REPORT_SLACK_CHANNEL || '#soc-reportes'),\n      requested_by: 'system/n8n'\n    }\n  }\n];"
+      },
+      "id": "e5000000-0000-4000-8000-000000000002",
+      "name": "2 · Preparar ventana y URLs (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -660,
+        320
+      ],
+      "notes": "Calcula la ventana ISO-8601 de los últimos 7 días y compone la URL del endpoint de reportes (GET /api/v1/reports/operational?format=pdf) y la de inventario."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.auth_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "username",
+              "value": "={{ $env.SOCLITE_API_USER }}"
+            },
+            {
+              "name": "password",
+              "value": "={{ $env.SOCLITE_API_PASSWORD }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000003",
+      "name": "3 · HTTP login backend (JWT)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -440,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Obtiene el access_token del backend (OAuth2 password, contrato §1). Usa un usuario de servicio con permiso reports:export; las credenciales viven en las variables de entorno SOCLITE_API_USER / SOCLITE_API_PASSWORD."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('2 · Preparar ventana y URLs (Code)').item.json.api_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{( $json.access_token ? 'Bearer ' + $json.access_token : 'Bearer ' + $('3 · HTTP login backend (JWT)').item.json.access_token ) }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/pdf"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data",
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000004",
+      "name": "4 · HTTP GET reporte PDF (backend)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -220,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Descarga el PDF desde GET /api/v1/reports/operational?format=pdf&from&to (permiso reports:export). responseFormat='file' deja el binario en la propiedad 'data'. Timeout 300 s porque el backend genera el PDF bajo demanda."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Checksum SHA-256 y nombre del artefacto del reporte\n// =====================================================================\nconst crypto = require('crypto');\nconst cfg = $('2 · Preparar ventana y URLs (Code)').first().json;\nconst login = $('3 · HTTP login backend (JWT)').first().json || {};\nconst item = $input.first();\nconst bin = item.binary && (item.binary.data || item.binary.report || Object.values(item.binary)[0]);\n\nconst buffer = bin && bin.data ? Buffer.from(bin.data, 'base64') : Buffer.alloc(0);\nconst sha256 = crypto.createHash('sha256').update(buffer).digest('hex');\nconst ext = cfg.format === 'xlsx' ? 'xlsx' : cfg.format === 'docx' ? 'docx' : 'pdf';\nconst stamp = String(cfg.period_from).slice(0, 10).replace(/-/g, '') + '-' + String(cfg.period_to).slice(0, 10).replace(/-/g, '');\nconst fileName = 'SOC-Lite_' + cfg.report_type + '_' + stamp + '.' + ext;\nconst relative = '/' + String(cfg.period_to).slice(0, 4) + '/' + String(cfg.period_to).slice(0, 7) + '/' + fileName;\n\nreturn [\n  {\n    json: {\n      report_type: cfg.report_type,\n      format: cfg.format,\n      period_from: cfg.period_from,\n      period_to: cfg.period_to,\n      period_days: cfg.period_days,\n      file_name: fileName,\n      file_path: String(cfg.storage_dir).replace(/\\/+$/, '') + relative,\n      storage_dir: cfg.storage_dir,\n      public_url: cfg.public_base_url ? cfg.public_base_url + relative : '',\n      file_size: buffer.length,\n      checksum_sha256: sha256,\n      mime_type: bin && bin.mimeType ? bin.mimeType : 'application/pdf',\n      generated_at: new Date().toISOString(),\n      api_url: cfg.api_url,\n      inventory_url: cfg.inventory_url,\n      recipients: cfg.recipients,\n      slack_channel: cfg.slack_channel,\n      access_token: login.access_token || null,\n      title: 'SOC-Lite · Reporte operativo ' + String(cfg.period_from).slice(0, 10) + ' → ' + String(cfg.period_to).slice(0, 10),\n      requested_by: cfg.requested_by\n    },\n    binary: item.binary\n  }\n];"
+      },
+      "id": "e5000000-0000-4000-8000-000000000005",
+      "name": "5 · Checksum SHA-256 (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        320
+      ],
+      "notes": "Calcula el SHA-256 del artefacto, valida el tamaño y compone el nombre y la ruta destino (/AAAA/AAAA-MM/SOC-Lite_operational_AAAA-MM-DD_AAAA-MM-DD.pdf) usados por el nodo de subida y por el registro en generated_reports."
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.REPORT_UPLOAD_URL || ('http://minio:9000/soc-lite-reports' + $json.file_path) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.mime_type }}"
+            },
+            {
+              "name": "x-amz-meta-checksum-sha256",
+              "value": "={{ $json.checksum_sha256 }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $env.REPORT_UPLOAD_AUTH || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "fullResponse": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000006",
+      "name": "6 · HTTP subir artefacto (S3/MinIO)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Sube el artefacto binario al almacenamiento de objetos compatible S3 (MinIO/NAS). Alternativa local: nodo 'Read/Write Files from Disk' (n8n-nodes-base.readWriteFile) escribiendo en REPORT_STORAGE_DIR si el contenedor comparte volumen."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.generated_reports (\n  report_type, report_format, title, period_from, period_to, file_path,\n  file_size, checksum_sha256, parameters, requested_by, status, error, expires_at\n) VALUES (\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.report_type }},\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.format }}::soclite.report_format,\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.title }},\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.period_from }}::timestamptz,\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.period_to }}::timestamptz,\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.file_path }},\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.file_size }},\n  {{ $('5 · Checksum SHA-256 (Code)').first().json.checksum_sha256 }},\n  jsonb_build_object(\n    'source', 'n8n:soc_lite_report_generation_workflow',\n    'api_url', {{ $('5 · Checksum SHA-256 (Code)').first().json.api_url }},\n    'public_url', {{ $('5 · Checksum SHA-256 (Code)').first().json.public_url }},\n    'upload_status', {{ $json.statusCode === undefined ? '409' : $json.statusCode }},\n    'mime_type', {{ $('5 · Checksum SHA-256 (Code)').first().json.mime_type }},\n    'recipients', {{ $('5 · Checksum SHA-256 (Code)').first().json.recipients }}\n  ),\n  (SELECT id FROM soclite.users WHERE username = 'admin' LIMIT 1),\n  'completed',\n  NULL,\n  now() + INTERVAL '180 days'\n)\nRETURNING id AS report_id, report_type, report_format, title, file_path, checksum_sha256, created_at;",
+        "options": {}
+      },
+      "id": "e5000000-0000-4000-8000-000000000007",
+      "name": "7 · Registrar reporte (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        440,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Registra el artefacto en soclite.generated_reports (file_path, file_size, checksum_sha256, periodo y parámetros) para que el backend pueda servir GET /reports/{id}/download y quede el histórico de reportes."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.audit_log (\n  occurred_at, user_id, username, module, action, entity, entity_id, result,\n  detail, after_data, ip_address, user_agent, http_method, http_path, http_status, severity\n) VALUES (\n  now(),\n  NULL,\n  'system/n8n',\n  'reports',\n  'EXPORT'::soclite.audit_action,\n  'report',\n  {{ $json.report_id }}::text,\n  'success'::soclite.audit_result,\n  left('Reporte operativo semanal generado y almacenado (' || '{{ $('5 · Checksum SHA-256 (Code)').first().json.format }}'\n       || '). Periodo ' || '{{ $('5 · Checksum SHA-256 (Code)').first().json.period_from }}'\n       || ' a ' || '{{ $('5 · Checksum SHA-256 (Code)').first().json.period_to }}'\n       || '. Archivo: ' || '{{ $('5 · Checksum SHA-256 (Code)').first().json.file_path }}', 1000),\n  jsonb_build_object(\n    'report_id', {{ $json.report_id }},\n    'file_path', {{ $('5 · Checksum SHA-256 (Code)').first().json.file_path }},\n    'checksum_sha256', {{ $('5 · Checksum SHA-256 (Code)').first().json.checksum_sha256 }},\n    'file_size', {{ $('5 · Checksum SHA-256 (Code)').first().json.file_size }},\n    'recipients', {{ $('5 · Checksum SHA-256 (Code)').first().json.recipients }},\n    'period_from', {{ $('5 · Checksum SHA-256 (Code)').first().json.period_from }},\n    'period_to', {{ $('5 · Checksum SHA-256 (Code)').first().json.period_to }}\n  ),\n  '127.0.0.1'::inet,\n  'n8n-workflow/soc-lite-report-generation',\n  'GET',\n  '/api/v1/reports/operational?format=pdf',\n  200,\n  'info'\n)\nRETURNING id AS audit_id, occurred_at, hash_self;",
+        "options": {}
+      },
+      "id": "e5000000-0000-4000-8000-000000000008",
+      "name": "8 · Bitácora EXPORT (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        660,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Registra la acción EXPORT en soclite.audit_log (module='reports'), tal como exige el contrato §7: 'Toda generación registra en bitácora EXPORT con módulo, formato y rango'."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Cuerpo del correo y del aviso de Slack con el reporte\n// =====================================================================\nconst r = $('5 · Checksum SHA-256 (Code)').first().json;\nconst reg = $('7 · Registrar reporte (PostgreSQL)').first().json || {};\nconst audit = $('8 · Bitácora EXPORT (PostgreSQL)').first().json || {};\nconst recipients = String(r.recipients || '')\n  .split(',')\n  .map((s) => s.trim())\n  .filter((s) => s.length > 3 && s.indexOf('@') > 0);\nconst sizeMb = (Number(r.file_size || 0) / 1048576).toFixed(2);\n\nconst html = [\n  '<h2>' + r.title + '</h2>',\n  '<p>Reporte operativo del SOC generado automáticamente por n8n (workflow 05).</p>',\n  '<ul>',\n  '<li><b>Periodo:</b> ' + r.period_from + ' → ' + r.period_to + ' (' + r.period_days + ' días)</li>',\n  '<li><b>Formato:</b> ' + r.format + ' · <b>Tamaño:</b> ' + sizeMb + ' MB</li>',\n  '<li><b>Archivo:</b> ' + r.file_path + '</li>',\n  '<li><b>SHA-256:</b> <code>' + r.checksum_sha256 + '</code></li>',\n  '<li><b>ID en soclite.generated_reports:</b> ' + (reg.report_id || 'n/d') + '</li>',\n  '</ul>',\n  '<p>Descarga: <a href=\"' + (r.public_url || r.api_url) + '\">' + (r.public_url || r.api_url) + '</a></p>',\n  '<p>Evidencia de auditoría: entrada <b>#' + (audit.audit_id || 'n/d') + '</b> en <code>soclite.audit_log</code> (module=reports, action=EXPORT).</p>',\n  '<p><small>SOC-Lite · generado el ' + r.generated_at + '</small></p>'\n].join('\\n');\n\nconst slackText = [\n  ':page_with_curl: *Reporte operativo SOC-Lite ' + String(r.period_from).slice(0, 10) + ' → ' + String(r.period_to).slice(0, 10) + '*',\n  'Formato: *' + r.format + '*  |  Tamaño: *' + sizeMb + ' MB*  |  Registro: *# ' + (reg.report_id || 'n/d') + '*',\n  '*' + r.file_path + '*',\n  'SHA-256: `' + r.checksum_sha256 + '`',\n  r.public_url ? '<' + r.public_url + '|Descargar reporte>' : 'Disponible en el backend: <' + r.api_url + '|API de reportes>'\n].join('\\n');\n\nreturn [\n  {\n    json: Object.assign({}, r, {\n      recipients: recipients,\n      email_to: recipients.join(', '),\n      email_subject: r.title,\n      email_html: html,\n      slack_channel: r.slack_channel,\n      slack_text: slackText,\n      report_id: reg.report_id || null,\n      audit_id: audit.audit_id || null,\n      file_size_mb: Number(sizeMb)\n    }),\n    binary: $input.first().binary\n  }\n];"
+      },
+      "id": "e5000000-0000-4000-8000-000000000009",
+      "name": "9 · Formatear aviso y correo (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        320
+      ],
+      "notes": "Compone el correo HTML (periodo, formato, tamaño, ruta, checksum y enlace de descarga) y el mensaje de Slack con el enlace al artefacto."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.slack_channel }}",
+          "mode": "name"
+        },
+        "text": "={{ $json.slack_text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": true
+        }
+      },
+      "id": "e5000000-0000-4000-8000-00000000000a",
+      "name": "10 · Slack reporte disponible",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        200
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_SLACK",
+          "name": "SOC-Lite Slack (Bot OAuth)"
+        }
+      },
+      "notes": "Avisa al canal de reportes con el enlace de descarga y el checksum de integridad."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM || 'soc-lite@org.local' }}",
+        "toEmail": "={{ $json.email_to }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "e5000000-0000-4000-8000-00000000000b",
+      "name": "11 · Email a responsables",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1320,
+        320
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_SMTP",
+          "name": "SOC-Lite SMTP"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Envía el reporte por correo a los responsables (jefe de SOC / CISO). continueOnFail=true: un fallo de SMTP no debe invalidar la generación del reporte. Para adjuntar el PDF, añadir en 'Attachments' el campo binario 'data'."
+    },
+    {
+      "parameters": {
+        "content": "## SOC-Lite · Reporte operativo semanal (lunes 07:00)\n\n1. `POST /auth/login` → JWT de servicio (`reports:export`)\n2. `GET /api/v1/reports/operational?format=pdf&from&to` (ventana 7 días)\n3. SHA-256 + nombre del artefacto\n4. Subida a S3/MinIO (`PUT`) o volumen compartido\n5. Registro en `soclite.generated_reports`\n6. Bitácora `audit_log` (module=`reports`, action=`EXPORT`)\n7. Notificación: Slack + correo a responsables\n\n📖 Detalle: `docs/05-workflow-n8n.md` §10",
+        "height": 460,
+        "width": 540,
+        "color": 6
+      },
+      "id": "e5000000-0000-4000-8000-0000000000f1",
+      "name": "NOTA · Cadena del reporte",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1080,
+        40
+      ],
+      "notes": "Sticky note explicativo del workflow de reportes."
+    }
+  ],
+  "connections": {
+    "1 · Schedule semanal lunes 07:00": {
+      "main": [
+        [
+          {
+            "node": "C · Set parámetros de reporte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "C · Set parámetros de reporte": {
+      "main": [
+        [
+          {
+            "node": "2 · Preparar ventana y URLs (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 · Preparar ventana y URLs (Code)": {
+      "main": [
+        [
+          {
+            "node": "3 · HTTP login backend (JWT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3 · HTTP login backend (JWT)": {
+      "main": [
+        [
+          {
+            "node": "4 · HTTP GET reporte PDF (backend)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4 · HTTP GET reporte PDF (backend)": {
+      "main": [
+        [
+          {
+            "node": "5 · Checksum SHA-256 (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 · Checksum SHA-256 (Code)": {
+      "main": [
+        [
+          {
+            "node": "6 · HTTP subir artefacto (S3/MinIO)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6 · HTTP subir artefacto (S3/MinIO)": {
+      "main": [
+        [
+          {
+            "node": "7 · Registrar reporte (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 · Registrar reporte (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "8 · Bitácora EXPORT (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8 · Bitácora EXPORT (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "9 · Formatear aviso y correo (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9 · Formatear aviso y correo (Code)": {
+      "main": [
+        [
+          {
+            "node": "10 · Slack reporte disponible",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "11 · Email a responsables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "America/Santiago"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [],
+  "active": false
+}

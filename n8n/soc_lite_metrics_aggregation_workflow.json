@@ -1,0 +1,322 @@
+{
+  "name": "SOC-Lite · 04 · Agregación de métricas diarias y ANALYZE (00:30)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 0 * * *"
+            }
+          ]
+        }
+      },
+      "id": "d4000000-0000-4000-8000-000000000001",
+      "name": "1 · Schedule diario 00:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1020,
+        300
+      ],
+      "notes": "Schedule Trigger diario a las 00:30 (cron '30 0 * * *', zona America/Santiago). Recalcula el agregado y refresca las estadísticas del planificador."
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "METRIC_DATE_OFFSET_DAYS",
+              "value": "1"
+            },
+            {
+              "name": "LOOKBACK_DAYS",
+              "value": "2"
+            },
+            {
+              "name": "ANALYZE_TARGETS",
+              "value": "soclite.alerts,soclite.triage_results,soclite.incidents,soclite.audit_log,soclite.enrichment_data"
+            },
+            {
+              "name": "KPI_SLACK_CHANNEL",
+              "value": "#soc-metricas"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-0000000000c0",
+      "name": "C · Set parámetros de métricas",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -820,
+        300
+      ],
+      "notes": "Parámetros: fecha de métrica (ayer), ventana de revisión (2 días, idempotente por ON CONFLICT) y tablas objetivo del ANALYZE."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- =====================================================================\n-- Recalcula soclite.alert_metrics_daily para los últimos 2 días.\n-- Idempotente: la clave primaria (metric_date, source_type, severity) hace que\n-- una nueva ejecución del mismo día SOBRESCRIBA los valores (no duplica).\n-- =====================================================================\nINSERT INTO soclite.alert_metrics_daily (\n  metric_date, source_type, severity, alerts_total, alerts_tp, alerts_fp,\n  alerts_escalated, mttt_avg_sec, mttt_p95_sec, mttr_avg_sec, automation_rate\n)\nSELECT a.occurred_at::date                          AS metric_date,\n       a.source_type,\n       a.severity,\n       count(*)::int                                AS alerts_total,\n       count(*) FILTER (WHERE t.verdict = 'true_positive')::int  AS alerts_tp,\n       count(*) FILTER (WHERE t.verdict = 'false_positive')::int AS alerts_fp,\n       count(*) FILTER (WHERE a.status = 'escalated')::int       AS alerts_escalated,\n       round(avg(a.mttt_seconds), 2)                AS mttt_avg_sec,\n       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY a.mttt_seconds)::numeric, 2) AS mttt_p95_sec,\n       round(avg(a.mttr_seconds), 2)                AS mttr_avg_sec,\n       round(\n         count(*) FILTER (WHERE a.mttt_seconds IS NOT NULL AND a.mttt_seconds <= 300)::numeric\n         / NULLIF(count(*), 0), 4\n       )                                            AS automation_rate\n  FROM soclite.alerts a\n  LEFT JOIN soclite.triage_results t ON t.alert_id = a.id AND t.is_current IS TRUE\n WHERE a.deleted_at IS NULL\n   AND a.occurred_at >= (CURRENT_DATE - INTERVAL '{{ $json.LOOKBACK_DAYS }} days')\n GROUP BY 1, 2, 3\nHAVING count(*) > 0\nON CONFLICT (metric_date, source_type, severity) DO UPDATE\n   SET alerts_total     = EXCLUDED.alerts_total,\n       alerts_tp        = EXCLUDED.alerts_tp,\n       alerts_fp        = EXCLUDED.alerts_fp,\n       alerts_escalated = EXCLUDED.alerts_escalated,\n       mttt_avg_sec     = EXCLUDED.mttt_avg_sec,\n       mttt_p95_sec     = EXCLUDED.mttt_p95_sec,\n       mttr_avg_sec     = EXCLUDED.mttr_avg_sec,\n       automation_rate  = EXCLUDED.automation_rate\nRETURNING metric_date, source_type, severity, alerts_total, alerts_tp, alerts_fp, mttt_avg_sec, automation_rate;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000002",
+      "name": "2 · Recalcular alert_metrics_daily (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -600,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Recalcula el agregado diario (alerts_total, TP, FP, escaladas, MTTT medio y p95, MTTR y automation_rate) por fecha + source_type + severity mediante UPSERT idempotente. Devuelve una fila por combinación actualizada."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- =====================================================================\n-- KPIs de gestión del día anterior: MTTT, tasa de FP y reduction rate.\n-- Los objetivos salen de soclite.kpi_targets (seed.sql).\n-- =====================================================================\nWITH d AS (\n  SELECT (CURRENT_DATE - INTERVAL '{{ $json.METRIC_DATE_OFFSET_DAYS }} days')::date AS dia\n),\nagg AS (\n  SELECT count(*)::int                                                   AS alerts_total,\n         count(*) FILTER (WHERE a.status = 'escalated')::int             AS alerts_escalated,\n         count(*) FILTER (WHERE a.status IN ('closed','false_positive'))::int AS alerts_closed,\n         count(*) FILTER (WHERE a.verdict = 'false_positive')::int       AS alerts_fp,\n         count(*) FILTER (WHERE a.verdict = 'true_positive')::int        AS alerts_tp,\n         count(*) FILTER (WHERE a.mttt_seconds IS NOT NULL)::int         AS alerts_triaged,\n         round(avg(a.mttt_seconds), 2)                                   AS mttt_avg_sec,\n         round(percentile_cont(0.5) WITHIN GROUP (ORDER BY a.mttt_seconds)::numeric, 2) AS mttt_median_sec,\n         round(percentile_cont(0.95) WITHIN GROUP (ORDER BY a.mttt_seconds)::numeric, 2) AS mttt_p95_sec,\n         round(avg(a.mttr_seconds), 2)                                   AS mttr_avg_sec,\n         count(*) FILTER (WHERE a.severity = 'critical' AND a.mttt_seconds IS NOT NULL AND a.mttt_seconds <= 900)::int AS crit_in_sla,\n         count(*) FILTER (WHERE a.severity = 'critical' AND a.mttt_seconds IS NOT NULL)::int AS crit_triaged,\n         count(*) FILTER (WHERE a.severity = 'high' AND a.mttt_seconds IS NOT NULL AND a.mttt_seconds <= 3600)::int AS high_in_sla,\n         count(*) FILTER (WHERE a.severity = 'high' AND a.mttt_seconds IS NOT NULL)::int AS high_triaged,\n         count(*) FILTER (WHERE a.is_suppressed)::int                    AS alerts_suppressed,\n         COALESCE(sum(GREATEST(a.dedup_count - 1, 0)), 0)::int           AS duplicates_collapsed\n    FROM soclite.alerts a, d\n   WHERE a.deleted_at IS NULL\n     AND a.occurred_at >= d.dia\n     AND a.occurred_at <  d.dia + INTERVAL '1 day'\n),\nbase AS (\n  SELECT count(*)::int AS ingeridas\n    FROM soclite.alerts a, d\n   WHERE a.deleted_at IS NULL\n     AND a.occurred_at >= d.dia\n     AND a.occurred_at <  d.dia + INTERVAL '1 day'\n)\nSELECT d.dia                                                          AS metric_date,\n       agg.alerts_total,\n       base.ingeridas                                                  AS alerts_ingested_raw,\n       agg.alerts_triaged,\n       agg.alerts_tp,\n       agg.alerts_fp,\n       agg.alerts_escalated,\n       agg.alerts_closed,\n       agg.alerts_suppressed,\n       agg.duplicates_collapsed,\n       agg.mttt_avg_sec,\n       agg.mttt_median_sec,\n       agg.mttt_p95_sec,\n       agg.mttr_avg_sec,\n       COALESCE(round(100.0 * agg.mttt_avg_sec / NULLIF(kt_mttt.target_value, 0), 2), NULL)        AS mttt_vs_target_pct,\n       COALESCE(round(1.0 * agg.alerts_fp / NULLIF(agg.alerts_triaged, 0), 4), 0)                  AS fp_rate,\n       COALESCE(round(1.0 * agg.alerts_suppressed / NULLIF(base.ingeridas, 0), 4), 0)               AS suppression_rate,\n       COALESCE(round(1.0 * (base.ingeridas - agg.alerts_escalated) / NULLIF(base.ingeridas, 0), 4), 0) AS noise_reduction_rate,\n       COALESCE(round(1.0 * agg.alerts_triaged / NULLIF(base.ingeridas, 0), 4), 0)                  AS automation_rate,\n       COALESCE(round(1.0 * agg.crit_in_sla / NULLIF(agg.crit_triaged, 0), 4), 0)                  AS sla_compliance_critical,\n       COALESCE(round(1.0 * agg.high_in_sla / NULLIF(agg.high_triaged, 0), 4), 0)                  AS sla_compliance_high,\n       (SELECT target_value FROM soclite.kpi_targets WHERE kpi_code = 'fp_rate' AND is_active)      AS target_fp_rate,\n       (SELECT target_value FROM soclite.kpi_targets WHERE kpi_code = 'noise_reduction' AND is_active) AS target_noise_reduction,\n       (SELECT target_value FROM soclite.kpi_targets WHERE kpi_code = 'automation_rate' AND is_active) AS target_automation_rate,\n       now()                                                           AS calculated_at\n  FROM d, agg, base\n  LEFT JOIN soclite.kpi_targets kt_mttt ON kt_mttt.kpi_code = 'mttt_critical' AND kt_mttt.is_active;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000003",
+      "name": "3 · Calcular KPIs MTTT/FP (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -380,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Calcula los KPIs del día anterior: MTTT medio/mediana/p95, tasa de FP (verdict false_positive / triajes), reduction rate (ruido evitado) y cumplimiento de SLA crítico/alto. Compara con soclite.kpi_targets."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Formatea el informe diario de KPIs y compila el ANALYZE\n// =====================================================================\nconst k = ($input.first() || {}).json || {};\nconst num = (v) => (v === null || v === undefined || v === '' ? 0 : Number(v));\nconst pct = (v) => (num(v) * 100).toFixed(1) + ' %';\nconst sec = (v) => {\n  const s = num(v);\n  if (!s) return 'n/d';\n  if (s < 60) return Math.round(s) + ' s';\n  if (s < 3600) return (s / 60).toFixed(1) + ' min';\n  return (s / 3600).toFixed(2) + ' h';\n};\nconst flag = (ok) => (ok ? ':white_check_mark:' : ':x:');\n\nconst fpRate = num(k.fp_rate);\nconst reduction = num(k.noise_reduction_rate);\nconst automation = num(k.automation_rate);\nconst slaCrit = num(k.sla_compliance_critical);\nconst slaHigh = num(k.sla_compliance_high);\nconst targetFp = num(k.target_fp_rate) || 0.3;\nconst targetRed = num(k.target_noise_reduction) || 0.7;\nconst targetAuto = num(k.target_automation_rate) || 0.85;\n\nconst lines = [\n  '*SOC-Lite · KPIs ' + (k.metric_date || '') + '*',\n  ':inbox_tray: Alertas ingeridas: *' + num(k.alerts_ingested_raw) + '*  |  triadas: *' + num(k.alerts_triaged) + '*  |  escaladas: *' + num(k.alerts_escalated) + '*',\n  ':mag: TP: *' + num(k.alerts_tp) + '*  |  FP: *' + num(k.alerts_fp) + '*  |  suprimidas/deduplicadas: *' + num(k.alerts_suppressed) + '* (eventos colapsados: ' + num(k.duplicates_collapsed) + ')',\n  ':stopwatch: MTTT medio: *' + sec(k.mttt_avg_sec) + '*  |  mediana: *' + sec(k.mttt_median_sec) + '*  |  p95: *' + sec(k.mttt_p95_sec) + '*',\n  ':hammer: MTTR medio: *' + sec(k.mttr_avg_sec) + '*',\n  flag(fpRate <= targetFp) + ' Tasa de FP: *' + pct(fpRate) + '* (objetivo <= ' + pct(targetFp) + ')',\n  flag(reduction >= targetRed) + ' Reduction rate: *' + pct(reduction) + '* (objetivo >= ' + pct(targetRed) + ')',\n  flag(automation >= targetAuto) + ' Automatizacion: *' + pct(automation) + '* (objetivo >= ' + pct(targetAuto) + ')',\n  flag(slaCrit >= 0.95) + ' SLA crítico: *' + pct(slaCrit) + '*  |  ' + flag(slaHigh >= 0.94) + ' SLA alto: *' + pct(slaHigh) + '*'\n].join('\\n');\n\nconst tables = String($env.ANALYZE_TARGETS || $json.ANALYZE_TARGETS || 'soclite.alerts,soclite.triage_results,soclite.incidents,soclite.audit_log,soclite.enrichment_data')\n  .split(',')\n  .map((t) => t.trim())\n  .filter((t) => /^[a-zA-Z_][a-zA-Z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(t));\n\nconst analyzeSql = tables.map((t) => 'ANALYZE ' + t + ';').join('\\n');\nconst rules = {\n  fp_rate_ok: fpRate <= targetFp,\n  reduction_ok: reduction >= targetRed,\n  automation_ok: automation >= targetAuto,\n  sla_critical_ok: slaCrit >= 0.95,\n  sla_high_ok: slaHigh >= 0.94\n};\nconst breaches = Object.keys(rules).filter((r) => !rules[r]);\n\nreturn [\n  {\n    json: Object.assign({}, k, {\n      kpi_text: lines,\n      kpi_breaches: breaches,\n      kpi_ok: breaches.length === 0,\n      analyze_targets: tables,\n      analyze_sql: analyzeSql,\n      slack_channel: $env.KPI_SLACK_CHANNEL || '#soc-metricas',\n      calculated_at: new Date().toISOString()\n    })\n  }\n];"
+      },
+      "id": "d4000000-0000-4000-8000-000000000004",
+      "name": "4 · Formatear KPIs y ANALYZE (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        300
+      ],
+      "notes": "Formatea el informe de KPIs comparando con los objetivos (kpi_targets) y compila la sentencia ANALYZE de las tablas objetivo. Valida los nombres de tabla con expresión regular (defensa frente a inyección)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "ANALYZE soclite.alerts, soclite.triage_results, soclite.incidents, soclite.audit_log, soclite.enrichment_data;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000005",
+      "name": "5 · ANALYZE (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        80,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Refresca las estadísticas del planificador tras la carga diaria (ANALYZE de las tablas del agregado y de la bitácora). continueOnFail=true: es una tarea de mantenimiento que no debe bloquear el informe."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT 'ANALYZE_OK' AS analyze_status,\n       now()       AS executed_at,\n       (SELECT count(*) FROM pg_stat_user_tables WHERE schemaname = 'soclite' AND last_analyze IS NOT NULL)::int AS tablas_analizadas;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000006",
+      "name": "6 · Verificar ANALYZE (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        300,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Confirma la ejecución del ANALYZE y deja evidencia del número de tablas del esquema soclite con estadísticas actualizadas."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.notifications (alert_id, incident_id, channel, target, severity, payload, status, attempts, sent_at)\nVALUES (\n  NULL,\n  NULL,\n  'slack',\n  '{{ $json.slack_channel }}',\n  'info'::soclite.severity_level,\n  jsonb_build_object(\n    'kind', 'kpi_daily',\n    'metric_date', '{{ $json.metric_date }}',\n    'alerts_total', {{ $json.alerts_total }},\n    'mttt_avg_sec', {{ $json.mttt_avg_sec }},\n    'fp_rate', {{ $json.fp_rate }},\n    'noise_reduction_rate', {{ $json.noise_reduction_rate }},\n    'automation_rate', {{ $json.automation_rate }},\n    'kpi_breaches', '{{ JSON.stringify($json.kpi_breaches) }}'::jsonb,\n    'kpi_ok', {{ $json.kpi_ok }}\n  ),\n  'sent',\n  1,\n  now()\n)\nRETURNING id AS notification_id, channel, status, created_at;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000007",
+      "name": "7 · Registrar KPIs (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        520,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Guarda el snapshot diario de KPIs en soclite.notifications (channel='slack', payload.kind='kpi_daily') como serie histórica para el dashboard y las auditorías."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.audit_log (\n  occurred_at, user_id, username, module, action, entity, entity_id, result,\n  detail, before_data, after_data, ip_address, user_agent, severity\n) VALUES (\n  now(),\n  NULL,\n  'system/n8n',\n  'dashboard',\n  'UPDATE'::soclite.audit_action,\n  'alert_metrics_daily',\n  '{{ $json.metric_date }}',\n  CASE WHEN {{ $json.kpi_ok }} THEN 'success'::soclite.audit_result ELSE 'success'::soclite.audit_result END,\n  left('Recalculo nocturno de alert_metrics_daily y ANALYZE. alertas=' || '{{ $json.alerts_total }}'\n       || ', MTTT medio=' || '{{ $json.mttt_avg_sec }}' || ' s'\n       || ', tasa FP=' || '{{ $json.fp_rate }}'\n       || ', reduction rate=' || '{{ $json.noise_reduction_rate }}'\n       || ', KPI en breach: ' || '{{ JSON.stringify($json.kpi_breaches) }}', 1000),\n  NULL,\n  jsonb_build_object('metrics_rows', 1, 'analyze', 'ok', 'kpi_ok', {{ $json.kpi_ok }}),\n  '127.0.0.1'::inet,\n  'n8n-workflow/soc-lite-metrics-aggregation',\n  'info'\n)\nRETURNING id AS audit_id, occurred_at, hash_self;",
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000008",
+      "name": "8 · Bitácora de métricas (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        740,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Audita el recálculo nocturno de agregados (module='dashboard', action='UPDATE') dejando el resumen de KPIs en el detalle de la bitácora."
+    },
+    {
+      "parameters": {
+        "content": "## SOC-Lite · Métricas diarias (00:30)\n\n1. Recalcula `alert_metrics_daily` (UPSERT idempotente por `metric_date + source_type + severity`)\n2. Calcula KPIs: **MTTT** (medio/mediana/p95), **tasa de FP**, **reduction rate**, automatización y SLA\n3. `ANALYZE` de las tablas principales para refrescar el planificador\n4. Guarda el snapshot en `notifications` y audita el proceso\n\nVentana de revisión: `LOOKBACK_DAYS = 2` (corrige datos que llegan tarde sin duplicar).\n\n📖 Detalle: `docs/05-workflow-n8n.md` §9",
+        "height": 420,
+        "width": 520,
+        "color": 2
+      },
+      "id": "d4000000-0000-4000-8000-0000000000f1",
+      "name": "NOTA · Agregado e idempotencia",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1020,
+        40
+      ],
+      "notes": "Sticky note explicativo del workflow de métricas."
+    }
+  ],
+  "connections": {
+    "1 · Schedule diario 00:30": {
+      "main": [
+        [
+          {
+            "node": "C · Set parámetros de métricas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "C · Set parámetros de métricas": {
+      "main": [
+        [
+          {
+            "node": "2 · Recalcular alert_metrics_daily (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 · Recalcular alert_metrics_daily (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "3 · Calcular KPIs MTTT/FP (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3 · Calcular KPIs MTTT/FP (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "4 · Formatear KPIs y ANALYZE (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4 · Formatear KPIs y ANALYZE (Code)": {
+      "main": [
+        [
+          {
+            "node": "5 · ANALYZE (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "7 · Registrar KPIs (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 · ANALYZE (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "6 · Verificar ANALYZE (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 · Registrar KPIs (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "8 · Bitácora de métricas (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "America/Santiago"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [],
+  "active": false
+}

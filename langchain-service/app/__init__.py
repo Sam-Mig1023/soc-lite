@@ -1,0 +1,1 @@
+"""SOC-Lite · microservicio de triaje."""

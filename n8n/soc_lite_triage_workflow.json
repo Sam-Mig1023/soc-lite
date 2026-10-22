@@ -1,0 +1,1054 @@
+{
+  "name": "SOC-Lite · 01 · Triage automático de alertas (Wazuh/OPNsense → LLM → Ticket → Bitácora)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-0000000000e1",
+      "name": "E · Error Trigger global",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        1180
+      ],
+      "notes": "Error Workflow global del SOC-Lite. En Ajustes → Workflow → Error Workflow se selecciona ESTE workflow ('SOC-Lite · 01 · Triage automático...'), de modo que cualquier workflow del SOC que falle dispara este nodo. Registra el fallo en soclite.audit_log (module='triage', result='failure')."
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "BACKEND_BASE_URL",
+              "value": "http://backend:8000/api/v1"
+            },
+            {
+              "name": "LANGCHAIN_URL",
+              "value": "http://langchain:8001/triage"
+            },
+            {
+              "name": "DASHBOARD_BASE_URL",
+              "value": "http://localhost:3000"
+            },
+            {
+              "name": "SOC_SCHEMA",
+              "value": "soclite"
+            },
+            {
+              "name": "SLACK_CHANNEL",
+              "value": "#soc-alertas"
+            },
+            {
+              "name": "SKIP_DEDUP_LOOKUP",
+              "value": "true"
+            },
+            {
+              "name": "OSTICKET_API_URL",
+              "value": "https://soporte.org.local/api/http.php/tickets.json"
+            },
+            {
+              "name": "REDMINE_TICKET_URL",
+              "value": "https://redmine.org.local/issues.json"
+            },
+            {
+              "name": "N8N_ORIGIN_IP",
+              "value": "10.10.2.90"
+            },
+            {
+              "name": "N8N_USER_AGENT",
+              "value": "soc-lite-n8n/1.0"
+            },
+            {
+              "name": "TRIAGE_MODEL",
+              "value": "llama3.1:8b"
+            },
+            {
+              "name": "TRIAGE_PROMPT_VERSION",
+              "value": "triage_v3"
+            },
+            {
+              "name": "TOKEN_COST_IN_USD_PER_1K",
+              "value": "0"
+            },
+            {
+              "name": "TOKEN_COST_OUT_USD_PER_1K",
+              "value": "0"
+            },
+            {
+              "name": "INGEST_KEY_PREFIX",
+              "value": "soclite",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-0000000000c0",
+      "name": "C · Set de entorno y variables globales",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1440,
+        300
+      ],
+      "notes": "Set 'Config'. Centraliza TODAS las variables del workflow. El secreto de ingesta NO se guarda aquí en claro: se lee de la variable de entorno del contenedor $env.SOC_INGEST_KEY (ver n8n/README.md §3). Si se preferencia una credencial 'Header Auth' nativa, sustituir la comparación del nodo 'Validar y normalizar' por $credentials."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wazuh-alert",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "1 · Webhook Wazuh/OPNsense",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        300
+      ],
+      "webhookId": "soc-lite-wazuh-alert",
+      "notes": "URL pública: POST https://n8n.org.local/webhook/wazuh-alert (en pruebas: POST http://localhost:5678/webhook/wazuh-alert). Autenticación: header X-Ingest-Key validado en el nodo Code 'Validar y normalizar' (no se usa la auth nativa del nodo para poder comparar y auditar el intento). responseMode=responseNode: recibe 202 inmediatamente tras el nodo '6a · Responder 202 Accepted'."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · BLOQUE INGESTA\n// 1) Valida el header X-Ingest-Key (comparación en tiempo constante)\n// 2) Normaliza el payload crudo de Wazuh / OPNsense al esquema de soclite.alerts\n// 3) Calcula alert_fingerprint = sha256(source_type|rule_id|source_ip|bucket 5 min)\n//    (mismo algoritmo que el INSERT ... ON CONFLICT del nodo '3 · INSERT alerta')\n// 4) Pre-escapa los literales SQL que usan los nodos PostgreSQL\n// =====================================================================\nconst crypto = require('crypto');\n\nconst ENV_KEY = String($env.SOC_INGEST_KEY || '');\nconst SOC_SCHEMA = String($env.SOC_SCHEMA || $json.SOC_SCHEMA || 'soclite');\nconst N8N_ORIGIN_IP = String($env.N8N_ORIGIN_IP || $json.N8N_ORIGIN_IP || '127.0.0.1');\n\n// --- Helper de comparación en tiempo constante -----------------------\nfunction safeEqual(a, b) {\n  try {\n    const ab = Buffer.from(String(a || ''), 'utf8');\n    const bb = Buffer.from(String(b || ''), 'utf8');\n    if (ab.length === 0 || ab.length !== bb.length) return false;\n    return crypto.timingSafeEqual(ab, bb);\n  } catch (e) {\n    return false;\n  }\n}\n\n// --- Helper de escapado de literales SQL -----------------------------\nconst esc = (v) => {\n  if (v === null || v === undefined || v === '') return 'NULL';\n  if (typeof v === 'number' && Number.isFinite(v)) return String(v);\n  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';\n  return \"'\" + String(v).replace(/\\u0000/g, '').replace(/'/g, \"''\") + \"'\";\n};\nconst q = (v) => esc(v);\nconst arr = (list) =>\n  \"'{\" + (list || []).map((x) => String(x).replace(/[\",\\\\{}]/g, '')).join(',') + \"}'\";\nconst jst = (d) => {\n  const t = d instanceof Date ? d : new Date(d);\n  const p = (n) => String(n).padStart(2, '0');\n  return (\n    t.getUTCFullYear() + '-' + p(t.getUTCMonth() + 1) + '-' + p(t.getUTCDate()) + ' ' +\n    p(t.getUTCHours()) + ':' + p(t.getUTCMinutes()) + ':' + p(t.getUTCSeconds()) + '+00'\n  );\n};\n\n// --- Cabeceras (n8n normaliza a minúsculas en webhook) ---------------\nconst headers = $json.headers || {};\nconst pick = (k) => headers[k] || headers[k.toLowerCase()] || headers[k.toUpperCase()];\nconst ingestKey = pick('x-ingest-key');\n\nif (!ENV_KEY) {\n  throw new Error(\n    'Falta la variable de entorno SOC_INGEST_KEY en el contenedor n8n (docker-compose env_file). Ver n8n/README.md §3.'\n  );\n}\nif (!safeEqual(ingestKey, ENV_KEY)) {\n  // El Error Workflow global del SOC-Lite ('E · Error Trigger global' de este mismo\n  // workflow) deja el intento fallido en soclite.audit_log (module='triage', result='failure').\n  throw new Error('401 No autorizado: header X-Ingest-Key ausente o invalido');\n}\n\n// --- Payload crudo ---------------------------------------------------\nconst raw = $json.body || $json;\nif (!raw || typeof raw !== 'object' || Object.keys(raw).length === 0) {\n  throw new Error('400 Bad Request: cuerpo JSON vacío o ilegible');\n}\nconst src = raw.data || raw.alert || raw;\nconst rule = src.rule || raw.rule || {};\nconst agent = src.agent || raw.agent || {};\nconst iface = src.interface || raw.interface || {};\nconst manager = src.manager || raw.manager || {};\n\n// --- Detección de origen (Wazuh vs OPNsense/Suricata) ----------------\nconst hdrSource = String(headers['x-source-type'] || headers['x-source'] || '').toLowerCase();\nlet sourceType =\n  raw.source_type ||\n  (hdrSource === 'opnsense' || hdrSource === 'suricata' || hdrSource === 'wazuh' ? hdrSource : null) ||\n  (iface.name || iface.alias || raw.event_type ? 'opnsense' : null) ||\n  ((raw.rule || src.rule) ? 'wazuh' : null);\nif (sourceType !== 'opnsense' && (iface.name || iface.alias)) sourceType = 'opnsense';\nif (!sourceType) sourceType = 'wazuh';\nconst cleanIp = (v) => {\n  if (!v) return null;\n  const s = String(v).split(':')[0].split('/')[0].trim();\n  return /^(\\d{1,3}\\.){3}\\d{1,3}$/.test(s) || s.includes(':') ? s : null;\n};\n// En Wazuh el campo srcip del evento trae la IP atacante\nconst sourceIp =\n  cleanIp(raw.source_ip || iface.src_ip || raw.src_ip || raw.srcip) ||\n  cleanIp((src.data && src.data.srcip) || null);\nconst destIp = cleanIp(iface.dest_ip || raw.dest_ip || (src.data && src.data.dstip) || (agent.ip ? null : null));\nconst sourcePort = Number(raw.source_port || iface.src_port || (src.data && src.data.srcport) || 0) || null;\nconst destPort = Number(raw.dest_port || iface.dest_port || (src.data && src.data.dstport) || 0) || null;\nconst protocol = String(iface.proto || raw.proto || (src.data && src.data.protocol) || '').toLowerCase() || null;\n\n// --- Severidad -------------------------------------------------------\nconst ruleLevel = Number(rule.level !== undefined ? rule.level : raw.rule_level !== undefined ? raw.rule_level : raw.severity_raw || 0);\nfunction sevFromLevel(l) {\n  if (l >= 12) return 'critical';\n  if (l >= 9) return 'high';\n  if (l >= 7) return 'medium';\n  if (l >= 4) return 'low';\n  return 'info';\n}\nconst severity = raw.severity || sevFromLevel(ruleLevel);\nconst srcPortNum = Number.isFinite(sourcePort) ? sourcePort : null;\nconst occurredAt = new Date(raw.occurred_at || raw.timestamp || src.timestamp || Date.now());\n\n// --- Huella idempotente: sha256(source_type|rule_id|source_ip|bucket 5 min) ---\nconst bucket5 = new Date(Math.floor(occurredAt.getTime() / 300000) * 300000);\nconst fpInput = [\n  String(sourceType || 'wazuh'),\n  String(rule.id || raw.rule_id || iface.sid || 'unknown'),\n  String(sourceIp || 'na'),\n  bucket5.toISOString()\n].join('|');\nconst fingerprint = crypto.createHash('sha256').update(fpInput, 'utf8').digest('hex');\n\n// --- Valores SQL pre-escapados (los usan '3 · INSERT alerta' y '3b · UPDATE enriquecido') ---\nconst sqlValues = {\n  alert_fingerprint: q(fingerprint),\n  external_id: q(raw.external_id || raw.id || null),\n  source_type: q(sourceType),\n  source_name: q(raw.source_name || (sourceType === 'wazuh' ? 'wazuh-manager' : 'opnsense-ids')),\n  rule_id: q(String(rule.id || raw.rule_id || iface.sid || 'unknown')),\n  rule_level: Number.isFinite(ruleLevel) ? ruleLevel : 0,\n  rule_description: q(rule.description || raw.rule_description || iface.alert || 'Sin descripción'),\n  rule_groups: arr(rule.groups || raw.rule_groups || (iface.sid ? ['ids', 'et_malware'] : [])),\n  severity: q(severity),\n  severity_raw: Number.isFinite(Number(raw.severity_raw)) ? Number(raw.severity_raw) : (Number.isFinite(ruleLevel) ? ruleLevel : 0),\n  source_ip: sourceIp ? q(sourceIp) : 'NULL',\n  source_port: srcPortNum ? srcPortNum : 'NULL',\n  dest_ip: destIp ? q(destIp) : 'NULL',\n  dest_port: Number.isFinite(destPort) && destPort ? destPort : 'NULL',\n  protocol: protocol ? q(protocol) : 'NULL',\n  agent_id: q(agent.id || raw.agent_id || null),\n  agent_name: q(agent.name || raw.agent_name || raw.hostname || null),\n  mitre_technique: q((rule.mitre && rule.mitre.id) || raw.mitre_technique || null),\n  full_log: q(raw.full_log || src.full_log || null),\n  raw_payload: q(JSON.stringify(raw)),\n  occurred_at: q(jst(occurredAt))\n};\n\nreturn [\n  {\n    json: {\n      alert_fingerprint: fingerprint,\n      bucket_5min: bucket5.toISOString(),\n      source_type: sourceType,\n      rule_id: String(rule.id || raw.rule_id || iface.sid || 'unknown'),\n      rule_level: Number.isFinite(ruleLevel) ? ruleLevel : 0,\n      rule_description: rule.description || raw.rule_description || iface.alert || 'Sin descripción',\n      severity: severity,\n      severity_raw: Number.isFinite(Number(raw.severity_raw)) ? Number(raw.severity_raw) : ruleLevel,\n      status: 'pending',\n      is_suppressed: false,\n      dedup_count: 1,\n      source_ip: sourceIp || '',\n      dest_ip: destIp || '',\n      agent_name: agent.name || raw.agent_name || raw.hostname || '',\n      mitre_technique: (rule.mitre && rule.mitre.id) || raw.mitre_technique || null,\n      full_log: raw.full_log || src.full_log || '',\n      occurred_at: occurredAt.toISOString(),\n      raw_payload: raw,\n      ingest: {\n        received_at: new Date().toISOString(),\n        ingest_key_id: 'X-Ingest-Key',\n        origin_ip: N8N_ORIGIN_IP,\n        headers_user_agent: headers['user-agent'] || null,\n        auth_ok: true\n      },\n      schema: SOC_SCHEMA,\n      sql: sqlValues\n    }\n  }\n];"
+      },
+      "id": "a1000000-0000-4000-8000-0000000001b0",
+      "name": "1b · Validar y normalizar (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        300
+      ],
+      "notes": "Autenticación por header X-Ingest-Key + normalización Wazuh/OPNsense + cálculo del alert_fingerprint (sha256 de source_type|rule_id|source_ip|bucket de 5 min). Si la clave es inválida lanza error y el Error Trigger global lo registra en la bitácora."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-sev-rule-level",
+              "leftValue": "={{ $json.rule_level }}",
+              "rightValue": 7,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-dedup-window",
+              "leftValue": "={{ ($json.dedup && $json.dedup.exists === true) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEqual"
+              }
+            },
+            {
+              "id": "cond-suppressed",
+              "leftValue": "={{ $json.is_suppressed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "2 · IF filtro duplicados y severidad",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -780,
+        300
+      ],
+      "notes": "Filtro de entrada: (a) severidad SIEM >= media (rule_level >= 7); (b) no duplicado reciente; (c) no suprimido por regla de ruido. La consulta previa de duplicados de 30 min vive en soc_lite_dedup_suppression_workflow.json; aquí el campo $json.dedup.exists proviene de la comprobación de la ventana de 5 min del fingerprint y la deduplicación persistente es atómica en el INSERT ... ON CONFLICT del nodo 3. Rama FALSE -> '2b · NoOp descarte'."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.alerts (\n  alert_fingerprint, external_id, source_type, source_name, rule_id, rule_level,\n  rule_description, rule_groups, severity, severity_raw, status, source_ip, source_port,\n  dest_ip, dest_port, protocol, agent_id, agent_name, mitre_technique, full_log,\n  raw_payload, occurred_at, dedup_count, is_suppressed, risk_score, verdict\n) VALUES (\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.alert_fingerprint }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.external_id }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.source_type }}::soclite.source_type,\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.source_name }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.rule_id }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.rule_level }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.rule_description }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.rule_groups }}::text[],\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.severity }}::soclite.severity_level,\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.severity_raw }},\n  'pending',\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.source_ip }}::inet,\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.source_port }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.dest_ip }}::inet,\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.dest_port }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.protocol }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.agent_id }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.agent_name }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.mitre_technique }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.full_log }},\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.raw_payload }}::jsonb,\n  {{ $('1b · Validar y normalizar (Code)').item.json.sql.occurred_at }}::timestamptz,\n  1, FALSE, NULL, NULL\n)\nON CONFLICT (alert_fingerprint) DO UPDATE\n  SET dedup_count = soclite.alerts.dedup_count + 1,\n      updated_at  = now()\nRETURNING\n  id,\n  alert_fingerprint,\n  status,\n  severity,\n  dedup_count,\n  occurred_at,\n  (xmax <> 0) AS was_duplicate,\n  CASE WHEN xmax <> 0 THEN 'dedup' ELSE 'inserted' END AS ingest_result;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "3 · INSERT alerta (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -560,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "INSERT atómico e idempotente en soclite.alerts con status='pending'. Si el fingerprint ya existe (misma regla+IP en el mismo bucket de 5 min) incrementa dedup_count en lugar de crear otra alerta (was_duplicate=true). Devuelve id, status, dedup_count, occurred_at. El trigger trg_alerts_mttt calcula sla_due_at por severidad."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE soclite.alerts a\n   SET asset_id = ast.id\n  FROM soclite.assets ast\n WHERE a.id = {{ $('3 · INSERT alerta (PostgreSQL)').item.json.id }}\n   AND ast.hostname = a.agent_name\n   AND a.asset_id IS NULL\nRETURNING a.id AS alert_id, a.asset_id, ast.criticality AS asset_criticality;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-0000000003a",
+      "name": "3a · UPDATE contexto activo (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -340,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Correlaciona la alerta con el inventario (soclite.assets) por hostname para obtener asset_criticality, que es contexto obligatorio del triaje (contrato §4). continueOnFail=true: si el activo no existe el flujo continúa con criticality='media'."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LANGCHAIN_URL || 'http://langchain:8001/triage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Internal-Token",
+              "value": "={{ $env.INTERNAL_SERVICE_TOKEN }}"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{ $('3 · INSERT alerta (PostgreSQL)').item.json.alert_fingerprint }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ alert_id: $('3 · INSERT alerta (PostgreSQL)').item.json.id, trace_id: $('3 · INSERT alerta (PostgreSQL)').item.json.alert_fingerprint, alert: { rule_id: $('1b · Validar y normalizar (Code)').item.json.rule_id, rule_description: $('1b · Validar y normalizar (Code)').item.json.rule_description, severity_raw: $('1b · Validar y normalizar (Code)').item.json.severity_raw, source_ip: $('1b · Validar y normalizar (Code)').item.json.source_ip, dest_ip: $('1b · Validar y normalizar (Code)').item.json.dest_ip, agent_name: $('1b · Validar y normalizar (Code)').item.json.agent_name, full_log: $('1b · Validar y normalizar (Code)').item.json.full_log, occurred_at: $('1b · Validar y normalizar (Code)').item.json.occurred_at }, context: { recent_alerts_same_source: 0, asset_criticality: ($('3a · UPDATE contexto activo (PostgreSQL)').isExecuted ? $('3a · UPDATE contexto activo (PostgreSQL)').item.json.asset_criticality : null) || 'medium', known_false_positives: 0, policy: { allow_external_llm: false } } }) }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "neverError": false,
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "4 · HTTP POST /triage (LangChain)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -120,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "POST http://langchain:8001/triage (contrato §4, red interna). Reintentos: 3 intentos con espera exponencial gestionada por n8n (waitBetweenTries=2000 ms), timeout 120 s. fullResponse=true para poder leer statusCode y cabeceras en la validación posterior."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Paso 'Agente LangChain' del orquestador\n// Post-procesa la respuesta de POST http://langchain:8001/triage:\n//  - valida el esquema de la respuesta (contrato §4)\n//  - normaliza risk_score a entero 0..100\n//  - deriva la severidad operativa si el LLM no la devuelve\n//  - prepara el registro de soclite.triage_results\n//  - pre-escapa todo el SQL usado por los nodos PostgreSQL posteriores\n// =====================================================================\nconst STATUS = Number($json.statusCode || 200);\nconst TIER = $json.body || {};\nconst IDs = $('3 · INSERT alerta (PostgreSQL)').first().json;\nconst ALERT = $('1b · Validar y normalizar (Code)').first().json;\n\nconst VERDICTS = ['true_positive', 'false_positive', 'benign', 'suspicious', 'inconclusive'];\nconst SEVERITIES = ['info', 'low', 'medium', 'high', 'critical'];\nconst warnings = [];\nconst errors = [];\n\n// ---------------------------------------------------------------- validación\nif (STATUS < 200 || STATUS >= 300) {\n  errors.push('langchain_http_' + STATUS + ': ' + String(TIER.detail || TIER.message || 'respuesta no exitosa').slice(0, 500));\n}\nif (!TIER || Array.isArray(TIER) || typeof TIER !== 'object' || Object.keys(TIER).length === 0) {\n  errors.push('esquema: cuerpo de respuesta ausente o no es un objeto JSON');\n}\nconst verdict = VERDICTS.indexOf(TIER.verdict) >= 0 ? TIER.verdict : 'inconclusive';\nif (VERDICTS.indexOf(TIER.verdict) < 0) warnings.push('verdict fuera de enum -> inconclusive');\nconst llmSeverity = SEVERITIES.indexOf(TIER.severity) >= 0 ? TIER.severity : null;\nif (!llmSeverity) warnings.push('severity ausente -> derivada de risk_score');\nconst confidence = Number(TIER.confidence);\nif (!(confidence >= 0 && confidence <= 1)) {\n  warnings.push('confidence fuera de [0,1] -> 0.5');\n}\nconst conf = Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 ? Number(confidence.toFixed(3)) : 0.5;\nconst summary = String(TIER.summary || '').trim() || 'Sin resumen del modelo (revisión manual requerida)';\nconst reasoning = Array.isArray(TIER.reasoning) ? TIER.reasoning.map(String) : [];\nconst recommended = Array.isArray(TIER.recommended_actions) ? TIER.recommended_actions : [];\nconst mitre = Array.isArray(TIER.mitre_techniques) ? TIER.mitre_techniques.map(String) : [];\nconst indicators = Array.isArray(TIER.indicators) ? TIER.indicators : [];\n\n// -------------------------------------------------- risk_score normalizado\nlet risk = Number(TIER.risk_score);\nif (!Number.isFinite(risk)) {\n  warnings.push('risk_score ausente -> calculado = 20*severity + 40*confidence + 40*verdict_weight');\n  risk = 0;\n}\nrisk = Math.max(0, Math.min(100, Math.round(risk)));\nconst severity = llmSeverity || (risk >= 85 ? 'critical' : risk >= 65 ? 'high' : risk >= 35 ? 'medium' : risk > 0 ? 'low' : 'info');\n\nconst SEV_BASE = { info: 10, low: 30, medium: 55, high: 75, critical: 90 };\nconst VERDICT_ADJ = { true_positive: 10, suspicious: 5, inconclusive: 0, benign: -10, false_positive: -30 };\nconst sevBase = SEV_BASE[severity] !== undefined ? SEV_BASE[severity] : 50;\nconst verdictAdj = VERDICT_ADJ[verdict] !== undefined ? VERDICT_ADJ[verdict] : 0;\nconst contextAdj =\n  (String(ALERT.rule_level) >= '12' ? 5 : 0) +\n  (indicators.some((i) => i && i.verdict === 'malicious') ? 8 : 0) +\n  (indicators.some((i) => i && i.verdict === 'clean') ? -3 : 0);\nconst riskNormalized = Math.max(0, Math.min(100, Math.round(sevBase + verdictAdj + contextAdj)));\n\n// -------------------------------------------------------------- clasificación\nconst escalate = severity === 'high' || severity === 'critical';\nconst lowTier = severity === 'low' || severity === 'info' || verdict === 'false_positive';\n\n// ------------------------------------------------------------------ literales\nconst esc = (v) => {\n  if (v === null || v === undefined || v === '') return 'NULL';\n  if (typeof v === 'number' && Number.isFinite(v)) return String(v);\n  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';\n  return \"'\" + String(v).replace(/\\u0000/g, '').replace(/'/g, \"''\") + \"'\";\n};\nconst q = (v) => esc(v);\nconst arrLit = (list) => \"'{\" + (list || []).map((x) => String(x).replace(/[\",\\\\{}]/g, '')).join(',') + \"}'\";\nconst jb = (o) => q(JSON.stringify(o === undefined ? null : o));\n\n// trace_id de auditoría: UUID valido o NULL\nconst traceId = String(TIER.trace_id || '').match(/^[0-9a-fA-F-]{36}$/) ? TIER.trace_id : null;\n\nconst slackEmoji =\n  severity === 'critical' ? ':rotating_light:' : severity === 'high' ? ':warning:' : severity === 'medium' ? ':large_yellow_circle:' : ':white_circle:';\nconst dashboardUrl = String(($env.DASHBOARD_BASE_URL || 'http://localhost:3000')).replace(/\\/+$/, '') + '/alerts/' + IDs.id;\n\nconst sql = {\n  alert_id: Number(IDs.id),\n  verdict: q(verdict),\n  severity: q(severity),\n  risk_score: riskNormalized,\n  confidence: conf,\n  summary: q(summary),\n  reasoning: jb(reasoning),\n  recommended_actions: jb(recommended),\n  mitre_techniques: arrLit(mitre),\n  iocs: jb(indicators),\n  model_name: q(TIER.model || $env.TRIAGE_MODEL || 'llama3.1:8b'),\n  model_provider: q('ollama'),\n  prompt_version: q(TIER.prompt_version || $env.TRIAGE_PROMPT_VERSION || 'triage_v3'),\n  temperature: 0.1,\n  tokens_in: Number.isFinite(Number(TIER.tokens_in)) ? Number(TIER.tokens_in) : 0,\n  tokens_out: Number.isFinite(Number(TIER.tokens_out)) ? Number(TIER.tokens_out) : 0,\n  latency_ms: Number.isFinite(Number(TIER.latency_ms)) ? Number(TIER.latency_ms) : 0,\n  tools_used: arrLit(TIER.tools_used || []),\n  trace_id: traceId ? q(traceId) : 'NULL',\n  new_status: q(verdict === 'false_positive' ? 'false_positive' : escalate ? 'escalated' : 'triaged'),\n  full_log: q(ALERT.full_log),\n  mitre_technique: q(mitre[0] || ALERT.mitre_technique || null),\n  alert_severity: q(severity),\n  p1: q(escalate ? 'p1' : 'p2'),\n  title: q('[' + String(severity).toUpperCase() + '] ' + String(ALERT.rule_description || 'Alerta SOC-Lite') + ' en ' + String(ALERT.agent_name || 'activo desconocido')),\n  agent_name: q(ALERT.agent_name),\n  source_ip: q(ALERT.source_ip),\n  rule_id: q(ALERT.rule_id),\n  description: q(warnings.length ? summary + '\\nAvisos de validacion: ' + warnings.join('; ') : summary),\n  detail: q('Triage automatico n8n: verdict=' + verdict + ' severity=' + severity + ' risk=' + riskNormalized + ' conf=' + conf),\n  risk_breakdown: jb({ reported: risk, normalized: riskNormalized, severity_base: sevBase, verdict_adj: verdictAdj, context_adj: contextAdj })\n};\n\nreturn [\n  {\n    json: {\n      ok: errors.length === 0,\n      http_status: STATUS,\n      trace_id: traceId,\n      alert_id: Number(IDs.id),\n      alert: {\n        id: Number(IDs.id),\n        fingerprint: IDs.alert_fingerprint,\n        severity: severity,\n        verdict: verdict,\n        risk_score: riskNormalized,\n        escalate: escalate,\n        low_tier: lowTier\n      },\n      slack: {\n        emoji: slackEmoji,\n        channel: $env.SLACK_CHANNEL || '#soc-alertas',\n        dashboard_url: dashboardUrl\n      },\n      validations: { errors: errors, warnings: warnings },\n      triage: {\n        verdict: verdict,\n        severity: severity,\n        risk_score: riskNormalized,\n        risk_score_reported: Number.isFinite(Number(TIER.risk_score)) ? Number(TIER.risk_score) : null,\n        confidence: conf,\n        summary: summary,\n        model: TIER.model || $env.TRIAGE_MODEL || 'llama3.1:8b',\n        prompt_version: TIER.prompt_version || $env.TRIAGE_PROMPT_VERSION || 'triage_v3'\n      },\n      post: {\n        trace_id: traceId,\n        new_status: String(sql.new_status).replace(/'/g, ''),\n        escalate: escalate,\n        low_tier: lowTier,\n        dashboard_url: dashboardUrl,\n        severity: severity,\n        verdict: verdict,\n        risk_score: riskNormalized,\n        confidence: conf,\n        summary: summary,\n        model: TIER.model || $env.TRIAGE_MODEL || 'llama3.1:8b',\n        model_provider: 'ollama',\n        prompt_version: TIER.prompt_version || $env.TRIAGE_PROMPT_VERSION || 'triage_v3',\n        tokens_in: sql.tokens_in,\n        tokens_out: sql.tokens_out,\n        latency_ms: sql.latency_ms,\n        tools_used: TIER.tools_used || [],\n        mitre_techniques: mitre,\n        indicators: indicators,\n        reasoning: reasoning,\n        recommended_actions: recommended,\n        alert_title: String(sql.title).replace(/'/g, ''),\n        rule_description: ALERT.rule_description,\n        agent_name: ALERT.agent_name,\n        source_ip: ALERT.source_ip || 'n/d',\n        dest_ip: ALERT.dest_ip || 'n/d',\n        rule_id: ALERT.rule_id,\n        occurred_at: ALERT.occurred_at,\n        passed: verdict === 'true_positive' || verdict === 'suspicious'\n      },\n      sql: sql\n    }\n  }\n];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "5 · Post-triaje: validación y risk_score (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        200
+      ],
+      "notes": "Representa el paso 'Agente LangChain' del orquestador descrito en el contrato. Valida el esquema de la respuesta del LLM, normaliza risk_score a 0..100 (90*severidad + ajuste por veredicto + contexto) y prepara el registro completo de soclite.triage_results (incluido el pre-escapado SQL)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Respuesta de la API de ingesta\n// Construye el cuerpo de respuesta HTTP que devuelve\n// POST /webhook/wazuh-alert mediante '6a · Responder 202 Accepted'.\n// =====================================================================\nconst t = $json.triage || {};\nconst p = $json.post || {};\nreturn [\n  {\n    json: {\n      accepted: true,\n      httpStatus: 202,\n      alert_id: $json.alert_id,\n      alert_fingerprint: ($('3 · INSERT alerta (PostgreSQL)').first().json || {}).alert_fingerprint || null,\n      was_duplicate: Boolean(($('3 · INSERT alerta (PostgreSQL)').first().json || {}).was_duplicate),\n      dedup_count: ($('3 · INSERT alerta (PostgreSQL)').first().json || {}).dedup_count || 1,\n      severity: p.severity || null,\n      verdict: t.verdict || null,\n      risk_score: t.risk_score === undefined ? null : t.risk_score,\n      confidence: t.confidence === undefined ? null : t.confidence,\n      status: p.new_status || 'triaged',\n      escalate: Boolean(p.escalate),\n      trace_id: $json.trace_id || null,\n      dashboard_url: p.dashboard_url || null,\n      processed_at: new Date().toISOString()\n    }\n  }\n];"
+      },
+      "id": "a1000000-0000-4000-8000-0000000006a",
+      "name": "6a · Responder 202 Accepted (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        60
+      ],
+      "notes": "Prepara el cuerpo de la respuesta al SIEM. Solo cuando la petición llega por webhook (es decir, no en la ejecución del Error Trigger)."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "a1000000-0000-4000-8000-0000000006b",
+      "name": "6b · Respond to Webhook 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1620,
+        60
+      ],
+      "notes": "Responde 202 Accepted al SIEM con el resumen del triaje. Cierra la petición HTTP del nodo Webhook (responseMode=responseNode)."
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.post.severity }}",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.post.severity }}",
+                    "rightValue": "critical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "alta (critical/high)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.post.severity }}",
+                    "rightValue": "high",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "alta (critical/high)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.post.severity }}",
+                    "rightValue": "medium",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "media (medium)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.post.severity }}",
+                    "rightValue": "low",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "baja (low/info/falso positivo)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.post.verdict }}",
+                    "rightValue": "false_positive",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "baja (low/info/falso positivo)"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "fallback (revisión manual)"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "6 · Switch por severidad del veredicto",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        320,
+        200
+      ],
+      "notes": "Enruta por severidad del veredicto del LLM. Salida 0 'alta (critical/high)', salida 1 'media (medium)', salida 2 'baja (low/info/false_positive)', salida extra 'fallback (revisión manual)'. Las salidas 0 y 3 se unen en la cadena operativa (Slack -> Ticket -> Incidente -> Responder 202); las salidas 1 y 2 van directas a la bitácora."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 1) desmarca el triaje vigente anterior (regla del índice parcial uq_triage_current)\nWITH demote AS (\n  UPDATE soclite.triage_results\n     SET is_current = FALSE\n   WHERE alert_id = {{ $json.sql.alert_id }}\n     AND is_current IS TRUE\n  RETURNING id\n),\n-- 2) inserta el nuevo triaje como vigente\nins AS (\n  INSERT INTO soclite.triage_results (\n    alert_id, verdict, severity, risk_score, confidence, summary, reasoning,\n    recommended_actions, mitre_techniques, iocs, model_name, model_provider,\n    prompt_version, temperature, tokens_in, tokens_out, latency_ms, tools_used,\n    trace_id, is_current\n  ) VALUES (\n    {{ $json.sql.alert_id }},\n    {{ $json.sql.verdict }}::soclite.triage_verdict,\n    {{ $json.sql.severity }}::soclite.severity_level,\n    {{ $json.sql.risk_score }},\n    {{ $json.sql.confidence }},\n    {{ $json.sql.summary }},\n    {{ $json.sql.reasoning }}::jsonb,\n    {{ $json.sql.recommended_actions }}::jsonb,\n    {{ $json.sql.mitre_techniques }}::text[],\n    {{ $json.sql.iocs }}::jsonb,\n    {{ $json.sql.model_name }},\n    {{ $json.sql.model_provider }},\n    {{ $json.sql.prompt_version }},\n    {{ $json.sql.temperature }},\n    {{ $json.sql.tokens_in }},\n    {{ $json.sql.tokens_out }},\n    {{ $json.sql.latency_ms }},\n    {{ $json.sql.tools_used }}::text[],\n    {{ $json.sql.trace_id }}::uuid,\n    TRUE\n  )\n  RETURNING id AS triage_id, verdict, severity, risk_score, confidence\n),\n-- 3) actualiza la alerta con el veredicto del agente\nupd AS (\n  UPDATE soclite.alerts\n     SET status      = {{ $json.sql.new_status }}::soclite.alert_status,\n         verdict     = {{ $json.sql.verdict }}::soclite.triage_verdict,\n         severity    = {{ $json.sql.alert_severity }}::soclite.severity_level,\n         risk_score  = {{ $json.sql.risk_score }},\n         mitre_technique = COALESCE({{ $json.sql.mitre_technique }}, mitre_technique),\n         triaged_at  = now()\n   WHERE id = {{ $json.sql.alert_id }}\n     AND deleted_at IS NULL\n  RETURNING id, status, severity, risk_score, verdict, triaged_at, sla_due_at\n)\nSELECT u.id AS alert_id, u.status, u.severity, u.verdict, u.risk_score,\n       u.triaged_at, u.sla_due_at, i.triage_id, i.confidence, d.demoted\n  FROM upd u\n  CROSS JOIN ins i\n  LEFT JOIN (SELECT count(*) AS demoted FROM demote) d ON TRUE;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "7 · INSERT triaje + UPDATE alerta (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        540,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Transacción única: demota el triaje anterior (is_current=FALSE), inserta el nuevo triaje en soclite.triage_results marcándolo is_current=TRUE y actualiza soclite.alerts con status/verdict/risk_score/triaged_at. El trigger trg_alerts_mttt calcula mttt_seconds y sla_due_at."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT a.id AS alert_id, a.alert_fingerprint, a.status, a.severity, a.risk_score, a.verdict,\n       a.triaged_at, a.sla_due_at, a.mttt_seconds, a.occurred_at, a.source_ip, a.agent_name,\n       a.rule_id, a.rule_description, a.mitre_technique,\n       t.id AS triage_id, t.confidence, t.model_name, t.summary, t.trace_id,\n       COALESCE(ast.criticality, 'medium') AS asset_criticality,\n       ast.is_internet_facing, ast.business_owner,\n       inc.id AS incident_id, inc.incident_code, inc.external_ticket_id,\n       (a.triaged_at IS NOT NULL) AS triaged,\n       (a.sla_due_at IS NOT NULL AND a.sla_due_at < now() AND a.status = 'escalated') AS sla_breached\n  FROM soclite.alerts a\n  LEFT JOIN soclite.triage_results t ON t.alert_id = a.id AND t.is_current IS TRUE\n  LEFT JOIN soclite.assets ast ON ast.id = a.asset_id\n  LEFT JOIN LATERAL (\n        SELECT i.id, i.incident_code, i.external_ticket_id\n          FROM soclite.incidents i\n          JOIN soclite.incident_alerts ia ON ia.incident_id = i.id\n         WHERE ia.alert_id = a.id\n         ORDER BY i.id DESC\n         LIMIT 1\n       ) inc ON TRUE\n WHERE a.id = {{ $json.alert_id }};",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-0000000007a",
+      "name": "7a · SELECT estado de la alerta (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        760,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Relee el estado consolidado de la alerta (con activo, triaje vigente e incidente si existe). Es la entrada del nodo Slack y del nodo de ticket: así el mensaje y el ticket llevan el estado persistido real y no la estimación del agente."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_CHANNEL || '#soc-alertas' }}",
+          "mode": "name"
+        },
+        "text": "={{ ($('5 · Post-triaje: validación y risk_score (Code)').first().json.post.verdict === 'true_positive' ? ':rotating_light:' : ($('5 · Post-triaje: validación y risk_score (Code)').first().json.post.verdict === 'suspicious' ? ':warning:' : ':white_check_mark:')) + ' ALERTA ' + String($json.severity).toUpperCase() + ' · SOC-Lite' }}\n>{{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.post.verdict === 'true_positive' ? ':red_circle: *ACCIÓN REQUERIDA*' : ':large_yellow_circle: *Revisar*' }} — status «{{ $json.status }}»{{ $json.sla_breached ? ' · :alarm_clock: *SLA VENCIDO*' : '' }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": true
+        },
+        "blocksUi": {
+          "values": [
+            {
+              "blockValues": {
+                "type": "section",
+                "textType": "mrkdwn",
+                "text": "=*Severidad:* {{ $json.severity }} (SIEM level {{ $('1b · Validar y normalizar (Code)').first().json.rule_level }})  |  *Riesgo:* {{ $json.risk_score }}/100  |  *Confianza:* {{ $json.confidence }}\n*Activo:* {{ $json.agent_name || 'n/d' }}  |  *IP origen:* {{ $json.source_ip || 'n/d' }}  |  *Regla:* {{ $json.rule_id }}\n*Veredicto LLM:* {{ $json.verdict }}  |  *Modelo:* {{ $json.model_name }}"
+              }
+            },
+            {
+              "blockValues": {
+                "type": "section",
+                "textType": "mrkdwn",
+                "text": "=*Resumen del agente*\n>{{ $json.summary }}"
+              }
+            },
+            {
+              "blockValues": {
+                "type": "context",
+                "textType": "mrkdwn",
+                "text": "=Alertas vinculadas a la misma fuente en la ventana: *{{ $('3 · INSERT alerta (PostgreSQL)').first().json.dedup_count }}*  |  <{{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.post.dashboard_url }}|Ver alerta #{{ $json.alert_id }} en el dashboard>"
+              }
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "8 · Slack alerta alta/crítica",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        60
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_SLACK",
+          "name": "SOC-Lite Slack (Bot OAuth)"
+        }
+      },
+      "notes": "Notificación SOLO para severidad alta/crítica (salidas 0 y 3 del Switch). Formato: severidad, activo, IP origen, resumen del LLM, confianza/riesgo y enlace al dashboard. Variante Telegram: ver el nodo NO-OP '8b' y la sección Telegram del README (comentada)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · VARIANTE TELEGRAM (COMENTADA)\n// Para activarla: 1) importar el nodo 'Telegram' (n8n-nodes-base.telegram,\n// typeVersion 1.2) en lugar de este Code node; 2) crear la credencial\n// 'Telegram SOC-Lite Bot'; 3) usar el chat ID de soclite.integrations\n// (code='telegram'). El mensaje debe respetar el mismo formato que Slack.\n// ---------------------------------------------------------------------\n/*\n{\n  \"name\": \"8b · Telegram alerta alta/crítica (variante)\",\n  \"type\": \"n8n-nodes-base.telegram\",\n  \"typeVersion\": 1.2,\n  \"parameters\": {\n    \"resource\": \"message\",\n    \"operation\": \"sendMessage\",\n    \"chatId\": \"={{ $env.TELEGRAM_CHAT_ID }}\",\n    \"text\": \"={{ '🚨 ALERTA ' + String($json.severity).toUpperCase() + ' · SOC-Lite\\n' +\n               'Activo: ' + ($json.agent_name || 'n/d') + ' | IP: ' + ($json.source_ip || 'n/d') + '\\n' +\n               'Riesgo: ' + $json.risk_score + '/100 | Veredicto: ' + $json.verdict + '\\n' +\n               $json.summary }}\",\n    \"additionalFields\": { \"parse_mode\": \"Markdown\" }\n  }\n}\n*/\n// Nodo NO-OP: deja pasar el ítem (variante Telegram desactivada en esta versión).\nreturn [{ json: $json }];\n"
+      },
+      "id": "a1000000-0000-4000-8000-0000000008b",
+      "name": "8b · Variante Telegram (comentada)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        60
+      ],
+      "notes": "Documenta la variante Telegram del canal de notificación y actúa como No-Op. Se activa sustituyendo este nodo por n8n-nodes-base.telegram v1.2 y rellenando TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Apertura de ticket externo (osTicket / Redmine)\n// Construye el cuerpo JSON del ticket a partir del triaje vigente.\n// El nodo '9d · Normalizar ticket' extrae external_ticket_id de la respuesta.\n// =====================================================================\nconst t = $json;\nconst env = $env;\nconst base = String(env.DASHBOARD_BASE_URL || 'http://localhost:3000').replace(/\\/+$/, '');\nconst alertId = t.alert_id;\nconst sev = String(t.severity || 'medium').toUpperCase();\nconst subject = '[' + sev + '] SOC-Lite #' + alertId + ' · ' + (t.rule_description || 'Alerta de seguridad');\nconst body = [\n  'Alerta SOC-Lite #' + alertId + ' (' + (t.alert_fingerprint || '').slice(0, 16) + '…)',\n  '',\n  'Severidad: ' + t.severity + '  |  Riesgo: ' + t.risk_score + '/100  |  Confianza: ' + t.confidence,\n  'Veredicto del agente (' + (t.model_name || 'llama3.1:8b') + '): ' + t.verdict,\n  'Activo: ' + (t.agent_name || 'n/d') + '   IP origen: ' + (t.source_ip || 'n/d'),\n  'Regla: ' + (t.rule_id || 'n/d') + ' — ' + (t.rule_description || ''),\n  'Ocurrencia: ' + (t.occurred_at || '') + '   Triaje: ' + (t.triaged_at || '') + '   SLA: ' + (t.sla_due_at || ''),\n  '',\n  'Resumen del LLM:',\n  String(t.summary || ''),\n  '',\n  'Dashboard: ' + base + '/alerts/' + alertId\n].join('\\n');\n\nreturn [\n  {\n    json: {\n      alert_id: alertId,\n      severity: t.severity,\n      ticket_target: env.OSTICKET_API_URL ? 'osticket' : 'redmine',\n      ticket: {\n        alert: 'Security',\n        source: 'SOC-Lite n8n',\n        name: 'SOC-Lite Automation',\n        email: 'soc-lite@org.local',\n        subject: subject,\n        message: body,\n        priority: String(t.severity) === 'critical' ? 'Emergency' : 'High',\n        topicId: 'seguridad',\n        ip: t.source_ip || '',\n        issue: { project_id: 1, subject: subject, description: body, priority_id: String(t.severity) === 'critical' ? 5 : 4 },\n        soc_lite: { alert_id: alertId, fingerprint: t.alert_fingerprint, verdict: t.verdict, risk_score: t.risk_score }\n      }\n    }\n  }\n];"
+      },
+      "id": "a1000000-0000-4000-8000-0000000009a",
+      "name": "9a · Preparar ticket (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        200
+      ],
+      "notes": "Construye el payload del ticket para osTicket (HTTP API JSON) y su equivalente Redmine (issues.json). El destino se elige con la variable de entorno OSTICKET_API_URL."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OSTICKET_API_URL || $env.REDMINE_TICKET_URL || 'https://soporte.org.local/api/http.php/tickets.json' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.OSTICKET_API_KEY }}"
+            },
+            {
+              "name": "User-Agent",
+              "value": "soc-lite-n8n/1.0 (+SOC-Lite triage workflow)"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ticket) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false,
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-0000000009b",
+      "name": "9b · HTTP crear ticket (osTicket/Redmine)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Crea el ticket en osTicket/Redmine. Reintentos 3 con espera de 3 s, timeout 30 s. Guarda external_ticket_id (nodo 9d) y lo persiste en soclite.incidents."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Normaliza la respuesta del sistema de tickets\n// Extrae external_ticket_id y external_ticket_url sea osTicket o Redmine.\n// =====================================================================\nconst resp = $json.body || $json || {};\nconst prev = $('9a · Preparar ticket (Code)').first().json;\nconst base = String($env.OSTICKET_BASE_URL || 'https://soporte.org.local').replace(/\\/+$/, '');\n\nlet ticketId = null;\nlet ticketUrl = null;\nif (resp.id !== undefined && resp.id !== null && !resp.ticket_id) {\n  // Redmine: {\"issue\":{\"id\":123,...}}\n  ticketId = (resp.issue && resp.issue.id) || resp.id;\n  ticketUrl = base + '/issues/' + ticketId;\n} else if (resp.ticket_id) {\n  ticketId = resp.ticket_id;\n  ticketUrl = base + '/scp/tickets.php?id=' + ticketId;\n} else if (resp.number) {\n  ticketId = resp.number;\n  ticketUrl = base + '/tickets/' + resp.number;\n} else if (typeof resp === 'string' && resp.trim().length > 0) {\n  ticketId = resp.trim().slice(0, 64);\n}\nif (ticketId === null) {\n  ticketId = 'MANUAL-' + prev.alert_id;\n  ticketUrl = null;\n}\n\nreturn [\n  {\n    json: Object.assign({}, prev, {\n      external_ticket_id: String(ticketId),\n      external_ticket_url: ticketUrl,\n      ticket_http_status: Number($json.statusCode || 200),\n      ticket_created: true\n    })\n  }\n];"
+      },
+      "id": "a1000000-0000-4000-8000-0000000009d",
+      "name": "9d · Normalizar ticket (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        200
+      ],
+      "notes": "Extrae external_ticket_id de la respuesta (soporta osTicket ticket_id y Redmine issue.id) y lo deja disponible para el nodo PostgreSQL 9c."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Crea/actualiza el incidente vinculado y asocia la alerta.\n-- La creación solo ocurre con severidad 'critical' (la CTE devuelve 0 filas en el resto de casos).\nWITH seq AS (\n  SELECT 'INC-' || to_char(now(), 'YYYY') || '-' || lpad((COALESCE(MAX(SUBSTRING(incident_code FROM '[0-9]+$')::int), 0) + 1)::text, 5, '0') AS incident_code\n    FROM soclite.incidents\n   WHERE incident_code LIKE 'INC-' || to_char(now(), 'YYYY') || '-%'\n),\napp AS (\n  SELECT i.id, i.incident_code\n    FROM soclite.incidents i\n    JOIN soclite.incident_alerts ia ON ia.incident_id = i.id\n   WHERE ia.alert_id = {{ $json.alert_id }}\n   ORDER BY i.id DESC\n   LIMIT 1\n),\nnew_inc AS (\n  INSERT INTO soclite.incidents (\n    incident_code, title, description, status, priority, severity, category,\n    detected_at, external_ticket_id, external_ticket_url, impact, created_by\n  )\n  SELECT seq.incident_code,\n         left({{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.title }}, 250),\n         {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.description }},\n         'open'::soclite.incident_status,\n         {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.p1 }}::soclite.priority_level,\n         'critical'::soclite.severity_level,\n         CASE\n           WHEN {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.rule_description }} ILIKE '%ransomware%' THEN 'malware'\n           WHEN {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.rule_description }} ILIKE '%brute%' THEN 'intrusion'\n           WHEN {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.rule_description }} ILIKE '%phish%' THEN 'phishing'\n           ELSE 'other'\n         END,\n         {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.occurred_at }}::timestamptz,\n         {{ $json.external_ticket_id }},\n         {{ $json.external_ticket_url }},\n         {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.summary }},\n         (SELECT id FROM soclite.users WHERE username = 'admin' LIMIT 1)\n    FROM seq\n   WHERE {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.alert_severity }} = 'critical'\n     AND NOT EXISTS (SELECT 1 FROM app)\n  RETURNING id, incident_code\n),\nlinked AS (\n  INSERT INTO soclite.incident_alerts (incident_id, alert_id, linked_by)\n  SELECT ni.id, {{ $json.alert_id }}, (SELECT id FROM soclite.users WHERE username = 'admin' LIMIT 1)\n    FROM new_inc ni\n  ON CONFLICT (incident_id, alert_id) DO NOTHING\n  RETURNING incident_id\n),\nupdated AS (\n  UPDATE soclite.incidents i\n     SET external_ticket_id  = COALESCE({{ $json.external_ticket_id }}, i.external_ticket_id),\n         external_ticket_url = COALESCE({{ $json.external_ticket_url }}, i.external_ticket_url),\n         updated_at          = now()\n    FROM app\n   WHERE i.id = app.id\n  RETURNING i.id, i.incident_code\n)\nSELECT n.id AS incident_id, n.incident_code, 'created' AS incident_action\n  FROM new_inc n\nUNION ALL\nSELECT u.id, u.incident_code, 'updated'\n  FROM updated u;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-0000000009c",
+      "name": "9c · Incidente y ticket (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1880,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Guarda external_ticket_id/external_ticket_url y crea el incidente SOLO si la severidad del veredicto es 'critical' (código correlativo INC-YYYY-NNNNN), vinculándolo a la alerta en soclite.incident_alerts. continueOnFail=true: un fallo aquí no debe impedir el registro en la bitácora."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.audit_log (\n  occurred_at, user_id, username, module, action, entity, entity_id, result,\n  detail, ip_address, user_agent, http_method, http_path, http_status, duration_ms,\n  trace_id, severity\n) VALUES (\n  now(),\n  NULL,\n  'system/n8n',\n  'triage',\n  'TRIAGE_RUN'::soclite.audit_action,\n  'alert',\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.alert_id }}::text,\n  'success'::soclite.audit_result,\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.detail }},\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.source_ip }}::inet,\n  'n8n-workflow/soc-lite-triage',\n  'POST',\n  'http://langchain:8001/triage',\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.http_status }},\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.latency_ms }},\n  {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.trace_id }}::uuid,\n  CASE\n    WHEN {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.alert_severity }} = 'critical' THEN 'critical'\n    WHEN {{ $('5 · Post-triaje: validación y risk_score (Code)').first().json.sql.alert_severity }} = 'high' THEN 'warning'\n    ELSE 'info'\n  END\n)\nRETURNING id AS audit_id, occurred_at, hash_self;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-00000000000a",
+      "name": "10 · Bitácora de auditoría (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Registra el evento en soclite.audit_log: module='triage', action='TRIAGE_RUN', username='system/n8n', user_id NULL (n8n no es un usuario humano), resultado, ip_address del agente origen, trace_id del agente LLM, http_status y latencia. Recibe las 4 salidas del Switch: alta/fallback (tras el incidente) y media/baja (directas)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.audit_log (\n  occurred_at, user_id, username, module, action, entity, entity_id, result,\n  detail, ip_address, user_agent, trace_id, severity\n) VALUES (\n  now(),\n  NULL,\n  'system/n8n',\n  'triage',\n  CASE\n    WHEN '{{ $json.execution ? $json.execution.lastNodeExecuted : '' }}' = '' THEN 'CREATE'::soclite.audit_action\n    ELSE 'TRIAGE_RUN'::soclite.audit_action\n  END,\n  'workflow',\n  '{{ $json.workflow ? $json.workflow.name : 'desconocido' }}',\n  'failure'::soclite.audit_result,\n  left('Fallo del workflow n8n «' || '{{ $json.workflow ? $json.workflow.name : 'desconocido' }}'\n       || '» en el nodo «' || '{{ $json.execution ? $json.execution.lastNodeExecuted : 'desconocido' }}'\n       || '». Error: ' || '{{ $json.execution && $json.execution.error ? $json.execution.error.message : 'sin detalle' }}', 1000),\n  '127.0.0.1'::inet,\n  'n8n-error-trigger/1.0',\n  NULL,\n  'critical'\n)\nRETURNING id AS audit_id, occurred_at, hash_self;",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-00000000000e",
+      "name": "E1 · Bitácora de fallo (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        460,
+        1180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Deja rastro en soclite.audit_log de cualquier ejecución fallida del workflow (result='failure', severity='critical'), incluidos los intentos de ingesta con X-Ingest-Key inválida. Se configura como Error Workflow en las opciones del workflow."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-0000000002b0",
+      "name": "2b · NoOp descarte (ruido/duplicado)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        460
+      ],
+      "notes": "Fin de la rama FALSE del filtro: alertas con rule_level < 7 (severidad baja) o duplicadas/suprimidas se descartan sin llamar al LLM (ahorro de tokens). El descarte se contabiliza en soc_lite_dedup_suppression_workflow.json."
+    },
+    {
+      "parameters": {
+        "content": "## SOC-Lite · Workflow principal de triaje automático\n\n**Entrada** · Wazuh/OPNsense → `POST /webhook/wazuh-alert` (header `X-Ingest-Key`)\n\n**Cadena**\n1. Webhook + validación/normalización (`Code`) → fingerprint sha256(source_type|rule_id|ip|bucket 5 min)\n2. `IF` descarta `rule_level < 7`, duplicados y ruido conocido\n3. `PostgreSQL` INSERT alerta `pending` (idempotente por fingerprint)\n4. `HTTP` `POST http://langchain:8001/triage` (3 intentos, backoff, 120 s)\n5. `Code` valida esquema del LLM y normaliza `risk_score`\n6. `Switch` severidad: alta / media / baja / fallback\n7. `PostgreSQL` INSERT `triage_results` (is_current) + UPDATE alerta\n8. `Slack` solo alta/crítica (Telegram comentado en 8b)\n9. `HTTP` ticket osTicket/Redmine + `PostgreSQL` incidente si `critical`\n10. `PostgreSQL` bitácora `audit_log` (module=triage, action=TRIAGE_RUN)\n\n**Error Trigger global** → `E1 · Bitácora de fallo`\n\n📖 Documentación completa: `docs/05-workflow-n8n.md`",
+        "height": 780,
+        "width": 620,
+        "color": 4
+      },
+      "id": "a1000000-0000-4000-8000-0000000000f1",
+      "name": "NOTA · Diagrama general del flujo",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1480,
+        40
+      ],
+      "notes": "Sticky note 1 de 4: visión general del workflow principal."
+    },
+    {
+      "parameters": {
+        "content": "## Autenticación, filtrado y deduplicación\n\n- `SOC_INGEST_KEY` vive **solo** en el entorno del contenedor n8n (nunca en el JSON).\n- Comparación de la clave en **tiempo constante** (`crypto.timingSafeEqual`).\n- `alert_fingerprint = sha256(source_type|rule_id|source_ip|bucket5min)`.\n- La deduplicación persistente es **atómica**: `INSERT … ON CONFLICT (alert_fingerprint) DO UPDATE SET dedup_count = dedup_count + 1`.\n- Ventana amplia de 30 min → workflow `soc_lite_dedup_suppression_workflow.json`.\n- Umbral de negocio: `rule_level >= 7` (media o superior).",
+        "height": 340,
+        "width": 460,
+        "color": 5
+      },
+      "id": "a1000000-0000-4000-8000-0000000000f2",
+      "name": "NOTA · Ingesta y deduplicación",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        620
+      ],
+      "notes": "Sticky note 2 de 4: reglas de autenticación, filtrado y deduplicación."
+    },
+    {
+      "parameters": {
+        "content": "## Agente LangChain y enrutamiento\n\n- Endpoint interno `http://langchain:8001/triage` (nunca expuesto a Internet).\n- `retryOnFail: true`, `maxTries: 3`, `waitBetweenTries: 2000`, `timeout: 120000`.\n- El nodo `Code` valida `verdict`, `severity`, `confidence` y `risk_score` con *fallback* seguro.\n- El `Switch` traduce severidad → prioridad operativa y exige `fallback` para casos dudosos.",
+        "height": 340,
+        "width": 460,
+        "color": 3
+      },
+      "id": "a1000000-0000-4000-8000-0000000000f3",
+      "name": "NOTA · Triaje LLM y Switch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        620
+      ],
+      "notes": "Sticky note 3 de 4: triaje LLM y enrutamiento por severidad."
+    },
+    {
+      "parameters": {
+        "content": "## Respuesta, notificación, ticket y bitácora\n\n- `responseMode=responseNode` → el SIEM recibe **202 Accepted** tras el triaje.\n- `Slack` solo alta/crítica; variante **Telegram** comentada en `8b`.\n- `9b` crea el ticket (osTicket/Redmine, 3 intentos) y `9c` persiste `external_ticket_id`; el incidente se crea solo si `severity = critical`.\n- `10` escribe en `audit_log` (`module='triage'`, `action='TRIAGE_RUN'`, usuario `system/n8n`).\n- `E · Error Trigger global` + `E1` auditan cualquier fallo del workflow.",
+        "height": 340,
+        "width": 620,
+        "color": 6
+      },
+      "id": "a1000000-0000-4000-8000-0000000000f4",
+      "name": "NOTA · Salidas, ticket y auditoría",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        700
+      ],
+      "notes": "Sticky note 4 de 4: salidas del workflow (respuesta, notificación, ticket, incidente y bitácora)."
+    }
+  ],
+  "connections": {
+    "C · Set de entorno y variables globales": {
+      "main": [
+        [
+          {
+            "node": "1 · Webhook Wazuh/OPNsense",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1 · Webhook Wazuh/OPNsense": {
+      "main": [
+        [
+          {
+            "node": "1b · Validar y normalizar (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1b · Validar y normalizar (Code)": {
+      "main": [
+        [
+          {
+            "node": "2 · IF filtro duplicados y severidad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 · IF filtro duplicados y severidad": {
+      "main": [
+        [
+          {
+            "node": "3 · INSERT alerta (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2b · NoOp descarte (ruido/duplicado)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3 · INSERT alerta (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "3a · UPDATE contexto activo (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3a · UPDATE contexto activo (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "4 · HTTP POST /triage (LangChain)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4 · HTTP POST /triage (LangChain)": {
+      "main": [
+        [
+          {
+            "node": "5 · Post-triaje: validación y risk_score (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 · Post-triaje: validación y risk_score (Code)": {
+      "main": [
+        [
+          {
+            "node": "6 · Switch por severidad del veredicto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6 · Switch por severidad del veredicto": {
+      "main": [
+        [
+          {
+            "node": "7 · INSERT triaje + UPDATE alerta (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "10 · Bitácora de auditoría (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "10 · Bitácora de auditoría (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "7 · INSERT triaje + UPDATE alerta (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 · INSERT triaje + UPDATE alerta (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "7a · SELECT estado de la alerta (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7a · SELECT estado de la alerta (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "8 · Slack alerta alta/crítica",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8 · Slack alerta alta/crítica": {
+      "main": [
+        [
+          {
+            "node": "8b · Variante Telegram (comentada)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8b · Variante Telegram (comentada)": {
+      "main": [
+        [
+          {
+            "node": "9a · Preparar ticket (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9a · Preparar ticket (Code)": {
+      "main": [
+        [
+          {
+            "node": "9b · HTTP crear ticket (osTicket/Redmine)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9b · HTTP crear ticket (osTicket/Redmine)": {
+      "main": [
+        [
+          {
+            "node": "9d · Normalizar ticket (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9d · Normalizar ticket (Code)": {
+      "main": [
+        [
+          {
+            "node": "9c · Incidente y ticket (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9c · Incidente y ticket (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "10 · Bitácora de auditoría (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10 · Bitácora de auditoría (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "6a · Responder 202 Accepted (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6a · Responder 202 Accepted (Code)": {
+      "main": [
+        [
+          {
+            "node": "6b · Respond to Webhook 202",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E · Error Trigger global": {
+      "main": [
+        [
+          {
+            "node": "E1 · Bitácora de fallo (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "America/Santiago"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 2,
+  "tags": [],
+  "active": false
+}

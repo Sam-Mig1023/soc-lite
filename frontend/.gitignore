@@ -1,0 +1,25 @@
+node_modules/
+dist/
+dist-ssr/
+build/
+
+# Variables de entorno locales (nunca versionar secretos)
+.env
+.env.local
+.env.*.local
+*.local
+
+# Registros y cachés
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+.vite/
+coverage/
+
+# Editores y sistema operativo
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

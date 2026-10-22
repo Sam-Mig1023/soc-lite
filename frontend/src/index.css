@@ -1,0 +1,167 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =====================================================================
+   SOC-Lite · Estilos globales (tema oscuro tipo SOC)
+   Paleta: slate-900/950 con acentos cian (acción) y esmeralda (correcto).
+   ===================================================================== */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --soc-accent: #22d3ee;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-slate-950 text-slate-200 antialiased;
+  }
+
+  /* Foco visible para accesibilidad (WCAG 2.4.7) */
+  :focus-visible {
+    @apply outline-none ring-2 ring-cyan-400/70 ring-offset-2 ring-offset-slate-950;
+  }
+
+  ::selection {
+    @apply bg-cyan-500/30 text-cyan-50;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-slate-950;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full border-2 border-slate-950 bg-slate-700;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-600;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold tracking-tight text-slate-100;
+  }
+
+  /* Los inputs date/hora nativos se muestran oscuros en Chromium */
+  input[type='date'],
+  input[type='datetime-local'],
+  input[type='time'] {
+    color-scheme: dark;
+  }
+}
+
+@layer components {
+  .soc-panel {
+    @apply rounded-xl border border-slate-800 bg-slate-900/60 shadow-panel backdrop-blur-sm;
+  }
+
+  .soc-panel-header {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3;
+  }
+
+  .soc-panel-title {
+    @apply text-sm font-semibold uppercase tracking-wider text-slate-300;
+  }
+
+  .soc-input {
+    @apply w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100
+      placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/60
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .soc-label {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400;
+  }
+
+  .soc-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+      transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .soc-btn-primary {
+    @apply soc-btn bg-cyan-500 text-slate-950 hover:bg-cyan-400 active:bg-cyan-600;
+  }
+
+  .soc-btn-secondary {
+    @apply soc-btn border border-slate-700 bg-slate-800/80 text-slate-200 hover:border-slate-600 hover:bg-slate-700/80;
+  }
+
+  .soc-btn-danger {
+    @apply soc-btn bg-red-600 text-white hover:bg-red-500 active:bg-red-700;
+  }
+
+  .soc-btn-ghost {
+    @apply soc-btn text-slate-300 hover:bg-slate-800/70 hover:text-slate-100;
+  }
+
+  .soc-link {
+    @apply text-cyan-400 underline-offset-2 hover:text-cyan-300 hover:underline;
+  }
+
+  .soc-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .soc-th {
+    @apply whitespace-nowrap border-b border-slate-800 bg-slate-900/80 px-3 py-2.5 text-xs font-semibold
+      uppercase tracking-wider text-slate-400;
+  }
+
+  .soc-td {
+    @apply border-b border-slate-800/70 px-3 py-2.5 align-middle text-slate-200;
+  }
+
+  .soc-badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold leading-none;
+  }
+
+  .soc-skeleton {
+    @apply relative overflow-hidden rounded bg-slate-800/80;
+  }
+
+  .soc-skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full animate-shimmer
+      bg-gradient-to-r from-transparent via-slate-700/40 to-transparent;
+  }
+
+  .soc-code {
+    @apply rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-xs text-cyan-300;
+  }
+}
+
+@layer utilities {
+  .soc-scroll-x {
+    @apply overflow-x-auto;
+  }
+
+  .soc-truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .soc-grid-auto {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+}

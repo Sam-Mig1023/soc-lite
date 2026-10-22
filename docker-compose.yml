@@ -1,0 +1,295 @@
+# =====================================================================
+# SOC-Lite · Stack completo (Docker Compose)
+# Uso:  cp .env.example .env  &&  docker compose up -d
+# Único puerto expuesto a Internet: 443 (nginx).
+# Los servicios de datos (PostgreSQL, Redis, Ollama, backend, LangChain)
+# viven en redes internas y no publican puertos al host.
+# =====================================================================
+name: soc-lite
+
+services:
+  # -------------------------------------------------------------------
+  # Base de datos principal
+  # -------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: soc-lite-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-soclite}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soclite}
+      POSTGRES_DB: ${POSTGRES_DB:-soclite}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: ${TIMEZONE:-America/Santiago}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Los scripts se ejecutan en orden alfabético la primera vez
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    networks:
+      - soc-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soclite} -d ${POSTGRES_DB:-soclite}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    # Sin puertos publicados: sólo accesible desde la red interna
+
+  # -------------------------------------------------------------------
+  # Caché de enriquecimiento y rate limiting
+  # -------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: soc-lite-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      
+    volumes:
+      - redis_data:/data
+    networks:
+      - soc-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  # -------------------------------------------------------------------
+  # Motor de inferencia LLM local (sin salida a Internet)
+  # -------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: soc-lite-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - soc-internal
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 16G
+    # Descomentar para habilitar GPU NVIDIA (reduce el triaje de ~8 s a ~2,5 s)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # -------------------------------------------------------------------
+  # Descarga inicial del modelo (job efímero)
+  # -------------------------------------------------------------------
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: soc-lite-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull ${OLLAMA_MODEL:-llama3.1:8b} && echo 'Modelo listo'"]
+    networks:
+      - soc-internal
+    restart: "no"
+
+  # -------------------------------------------------------------------
+  # Microservicio de triaje con LangChain
+  # -------------------------------------------------------------------
+  langchain:
+    build:
+      context: ./langchain-service
+      dockerfile: Dockerfile
+    container_name: soc-lite-langchain
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      REDIS_URL: redis://redis:6379/0
+      BACKEND_URL: http://backend:8000
+      GEOIP_DB_PATH: /data/GeoLite2-City.mmdb
+    volumes:
+      # Colocar aquí GeoLite2-City.mmdb (registro gratuito en MaxMind)
+      - ./data/geoip:/data:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - soc-internal
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  # -------------------------------------------------------------------
+  # Backend FastAPI
+  # -------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: soc-lite-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      LANGCHAIN_SERVICE_URL: http://langchain:8001
+      REPORTS_DIR: /app/storage/reports
+    volumes:
+      - reports_data:/app/storage/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - soc-internal
+      - soc-edge
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5).status==200 else 1)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  # -------------------------------------------------------------------
+  # Orquestación low-code (n8n)
+  # -------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: soc-lite-n8n
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      N8N_HOST: ${N8N_HOST:-0.0.0.0}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      GENERIC_TIMEZONE: ${TIMEZONE:-America/Santiago}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-cambiar}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-cambiar-clave-cifrado}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-soclite}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-soclite}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-soclite}
+      DB_POSTGRESDB_SCHEMA: public
+      BACKEND_URL: http://backend:8000
+      LANGCHAIN_URL: http://langchain:8001
+      WEBHOOK_URL: ${BASE_URL:-http://localhost:8000}/n8n/
+      N8N_METRICS: "true"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+    ports:
+      - "127.0.0.1:5678:5678"   # sólo local: administración desde la propia red
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - soc-edge
+      - soc-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  # -------------------------------------------------------------------
+  # Frontend SPA servido por nginx
+  # -------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api/v1}
+    container_name: soc-lite-frontend
+    restart: unless-stopped
+    networks:
+      - soc-edge
+    depends_on:
+      - backend
+
+  # -------------------------------------------------------------------
+  # Proxy inverso y terminación TLS (único punto expuesto)
+  # -------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: soc-lite-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - soc-edge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+networks:
+  # Red expuesta (nginx, frontend, n8n)
+  soc-edge:
+    driver: bridge
+  # Red interna: sin acceso desde el host ni desde Internet
+  soc-internal:
+    driver: bridge
+    internal: false   # poner en true si el host no debe enrutar a esta red
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_models:
+  n8n_data:
+  reports_data:

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#020617" />
+    <meta
+      name="description"
+      content="SOC-Lite · Centro de operaciones de seguridad: triaje asistido por IA, gestión de alertas e incidentes y bitácora de auditoría."
+    />
+    <title>SOC-Lite · Centro de Operaciones de Seguridad</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background-color: #020617;
+        color: #e2e8f0;
+        font-family: Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, sans-serif;
+      }
+      .boot-splash {
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .boot-spinner {
+        width: 44px;
+        height: 44px;
+        border-radius: 9999px;
+        border: 3px solid #1e293b;
+        border-top-color: #22d3ee;
+        animation: boot-spin 0.9s linear infinite;
+      }
+      .boot-text {
+        color: #94a3b8;
+        font-size: 0.875rem;
+        letter-spacing: 0.02em;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-soc-bg text-soc-text antialiased">
+    <div id="root">
+      <div class="boot-splash" role="status" aria-live="polite">
+        <div class="boot-spinner" aria-hidden="true"></div>
+        <p class="boot-text">Cargando SOC-Lite…</p>
+      </div>
+    </div>
+    <noscript>
+      <p style="padding: 2rem; color: #e2e8f0">
+        SOC-Lite requiere JavaScript habilitado para operar el panel de seguridad.
+      </p>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

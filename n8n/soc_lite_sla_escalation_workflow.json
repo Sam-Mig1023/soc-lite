@@ -1,0 +1,414 @@
+{
+  "name": "SOC-Lite · 03 · Escalado de SLA (cada 5 min)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000001",
+      "name": "1 · Schedule cada 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1000,
+        300
+      ],
+      "notes": "Schedule Trigger: cada 5 minutos (*/5 * * * *). Zona horaria del workflow: America/Santiago."
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "SLA_WARN_MINUTES",
+              "value": "10"
+            },
+            {
+              "name": "ESCALATION_CHANNEL",
+              "value": "#soc-escalamientos"
+            },
+            {
+              "name": "SOC_MANAGER_EMAIL",
+              "value": "manager@org.local"
+            },
+            {
+              "name": "DASHBOARD_BASE_URL",
+              "value": "http://localhost:3000"
+            },
+            {
+              "name": "N8N_ORIGIN_IP",
+              "value": "10.10.2.90"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-0000000000c0",
+      "name": "C · Set parámetros SLA",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -800,
+        300
+      ],
+      "notes": "Parámetros: aviso previo de 10 min (SLA_WARN_MINUTES), canal de escalamiento, correo del responsable y URL del dashboard."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Detecta alertas en estado 'pending' con SLA vencido o próximo a vencer (<= 10 min)\n-- y las escala de forma ATÓMICA. Solo devuelve las que transicionan en esta pasada\n-- (RETURNING de un UPDATE con transición de estado) -> idempotencia natural: cada\n-- alerta se escala y se notifica UNA sola vez.\nWITH vencidas AS (\n  SELECT a.id,\n         a.alert_fingerprint,\n         a.severity,\n         a.risk_score,\n         a.verdict,\n         a.agent_name,\n         host(a.source_ip) AS source_ip,\n         a.rule_id,\n         a.rule_description,\n         a.occurred_at,\n         a.sla_due_at,\n         a.dedup_count,\n         a.assigned_to,\n         EXTRACT(EPOCH FROM (a.sla_due_at - now()))::int  AS seconds_left,\n         EXTRACT(EPOCH FROM (now() - a.sla_due_at))::int  AS seconds_overdue,\n         u.username                                        AS assigned_username,\n         COALESCE(ast.criticality, 'medium')               AS asset_criticality\n    FROM soclite.alerts a\n    LEFT JOIN soclite.users u   ON u.id = a.assigned_to\n    LEFT JOIN soclite.assets ast ON ast.id = a.asset_id\n   WHERE a.status = 'pending'::soclite.alert_status\n     AND a.deleted_at IS NULL\n     AND a.sla_due_at IS NOT NULL\n     AND a.sla_due_at <= now() + INTERVAL '{{ $json.SLA_WARN_MINUTES }} minutes'\n   ORDER BY a.sla_due_at ASC\n   LIMIT 200\n),\nescaladas AS (\n  UPDATE soclite.alerts a\n     SET status     = 'escalated'::soclite.alert_status,\n         updated_at = now()\n    FROM vencidas v\n   WHERE a.id = v.id\n  RETURNING a.id, a.status, a.severity, a.sla_due_at\n)\nSELECT e.id AS alert_id,\n       v.alert_fingerprint,\n       e.status,\n       e.severity,\n       v.risk_score,\n       v.verdict,\n       v.agent_name,\n       v.source_ip,\n       v.rule_id,\n       v.rule_description,\n       v.occurred_at,\n       e.sla_due_at,\n       v.seconds_left,\n       v.seconds_overdue,\n       v.dedup_count,\n       v.assigned_username,\n       v.asset_criticality,\n       CASE\n         WHEN v.seconds_overdue > 0 THEN 'vencido'\n         WHEN v.seconds_left <= 300 THEN 'critico'\n         ELSE 'proximo'\n       END AS sla_tier,\n       GREATEST(0, v.seconds_overdue) AS minutes_overdue\n  FROM escaladas e\n  JOIN vencidas v ON v.id = e.id\n ORDER BY v.sla_due_at ASC;",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000002",
+      "name": "2 · SELECT y escalar SLA (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Detecta alertas pending con sla_due_at vencido o a menos de 10 minutos y las pasa a 'escalated'. Devuelve únicamente las que cambiaron de estado en esta ejecución, de modo que la notificación no se repite cada 5 minutos (idempotencia)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Escalado de SLA: clasificación, mensaje y SQL de bitácora\n// Entrada: una fila por alerta escalada en esta pasada.\n// =====================================================================\nconst fmtDur = (sec) => {\n  const s = Math.abs(Number(sec) || 0);\n  if (s < 60) return s + ' s';\n  if (s < 3600) return Math.floor(s / 60) + ' min';\n  const h = Math.floor(s / 3600);\n  const m = Math.floor((s % 3600) / 60);\n  return h + ' h ' + m + ' min';\n};\nconst esc = (v) => {\n  if (v === null || v === undefined || v === '') return 'NULL';\n  if (typeof v === 'number' && Number.isFinite(v)) return String(v);\n  return \"'\" + String(v).replace(/\\u0000/g, '').replace(/'/g, \"''\") + \"'\";\n};\n\nconst DASH = String($env.DASHBOARD_BASE_URL || $('C · Set parámetros SLA').first().json.DASHBOARD_BASE_URL || 'http://localhost:3000').replace(/\\/+$/, '');\nconst out = [];\n\nfor (const item of $input.all()) {\n  const a = item.json || {};\n  if (!a.alert_id) continue;\n  const overdue = Number(a.seconds_overdue || 0) > 0;\n  const tier = a.sla_tier || (overdue ? 'vencido' : 'proximo');\n  const tierLabel = tier === 'vencido' ? 'SLA VENCIDO' : tier === 'critico' ? 'SLA CRITICO (<5 min)' : 'SLA PROXIMO A VENCER';\n  const tierEmoji = tier === 'vencido' ? ':alarm_clock:' : tier === 'critico' ? ':rotating_light:' : ':warning:';\n  const sev = String(a.severity || 'medium');\n  const prio = sev === 'critical' ? 'p1' : sev === 'high' ? 'p2' : sev === 'medium' ? 'p3' : 'p4';\n  const url = DASH + '/alerts/' + a.alert_id;\n  const deltaTxt = overdue\n    ? 'Vencido hace ' + fmtDur(a.seconds_overdue)\n    : 'Vence en ' + fmtDur(a.seconds_left);\n\n  const text = [\n    tierEmoji + ' *' + tierLabel + '* — alerta #' + a.alert_id + ' (' + sev.toUpperCase() + ' / ' + prio + ')',\n    'Activo: ' + (a.agent_name || 'n/d') + '  |  IP origen: ' + (a.source_ip || 'n/d') + '  |  Regla: ' + (a.rule_id || 'n/d'),\n    deltaTxt + '  |  Vencimiento: ' + (a.sla_due_at || 'n/d'),\n    'Asignada a: ' + (a.assigned_username || 'SIN ASIGNAR') + '  |  Eventos agrupados: ' + (a.dedup_count || 1),\n    String(a.rule_description || ''),\n    '<' + url + '|Ver alerta #' + a.alert_id + ' en el dashboard>'\n  ].join('\\n');\n\n  out.push({\n    json: {\n      alert_id: Number(a.alert_id),\n      alert_fingerprint: a.alert_fingerprint,\n      severity: sev,\n      priority: prio,\n      sla_tier: tier,\n      tier_label: tierLabel,\n      channel: $env.ESCALATION_CHANNEL || $('C · Set parámetros SLA').first().json.ESCALATION_CHANNEL || '#soc-escalamientos',\n      is_overdue: overdue,\n      minutes_overdue: Number(a.minutes_overdue || 0),\n      seconds_left: Number(a.seconds_left || 0),\n      notification_text: text,\n      dashboard_url: url,\n      escalate_to: sev === 'critical' || overdue ? 'soc_manager' : 'analyst_on_duty',\n      sql: {\n        alert_id: Number(a.alert_id),\n        rule_id: esc(a.rule_id),\n        severity: esc(sev),\n        sla_tier: esc(tier),\n        seconds_left: Number(a.seconds_left || 0),\n        seconds_overdue: Number(a.seconds_overdue || 0),\n        notification_text: esc(text),\n        model_name: esc('sla-escalation-v1'),\n        origin_ip: esc($env.N8N_ORIGIN_IP || '10.10.2.90'),\n        detail: esc('Escalado automatico de SLA: ' + tierLabel + ' (' + deltaTxt + ') para la alerta #' + a.alert_id + ' [' + sev + '/' + prio + ']')\n      }\n    }\n  });\n}\n\nreturn out;"
+      },
+      "id": "c3000000-0000-4000-8000-000000000003",
+      "name": "3 · Clasificar y preparar aviso (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        300
+      ],
+      "notes": "Clasifica el escalado en 'vencido' / 'critico' / 'proximo', calcula la prioridad (p1..p4), redacta el mensaje y prepara el SQL de la bitácora."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "critical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "vencido / crítica (inmediato)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.sla_tier }}",
+                    "rightValue": "vencido",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "vencido / crítica (inmediato)"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "sin escalado"
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000004",
+      "name": "4 · Switch severidad y vencimiento",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -140,
+        300
+      ],
+      "notes": "Rutas: 'vencido / crítica (inmediato)' notifica de inmediato con mención al jefe de SOC; la salida extra 'sin escalado' solo corresponde a la ventana preventiva. Nota de importación: las dos reglas comparten la misma salida (n8n v3 las agrupa); si tu versión de n8n las separa, recrea la salida agrupada en la UI."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channel }}",
+          "mode": "name"
+        },
+        "text": "={{ ':rotating_light: *ESCALADO SLA CRITICO* — alerta #' + $json.alert_id + '\\n' + $json.notification_text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": true
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000005",
+      "name": "5 · Slack escalado crítico",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        100,
+        140
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_SLACK",
+          "name": "SOC-Lite Slack (Bot OAuth)"
+        }
+      },
+      "notes": "Aviso inmediato al canal de escalamientos para SLA vencido o severidad crítica."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channel }}",
+          "mode": "name"
+        },
+        "text": "={{ ':warning: *Aviso de SLA* — alerta #' + $json.alert_id + '\\n' + $json.notification_text }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": true
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000006",
+      "name": "6 · Slack aviso preventivo",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        320,
+        140
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_SLACK",
+          "name": "SOC-Lite Slack (Bot OAuth)"
+        }
+      },
+      "notes": "Aviso preventivo para las alertas de la ventana de 10 min aún no vencidas."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.notifications (alert_id, incident_id, channel, target, severity, payload, status, attempts, sent_at, error)\nVALUES (\n  {{ $json.sql.alert_id }},\n  NULL,\n  'slack',\n  '{{ $json.channel }}',\n  {{ $json.sql.severity }}::soclite.severity_level,\n  jsonb_build_object(\n    'kind', 'sla_escalation',\n    'tier', {{ $json.sql.sla_tier }},\n    'seconds_left', {{ $json.sql.seconds_left }},\n    'seconds_overdue', {{ $json.sql.seconds_overdue }},\n    'escalate_to', '{{ $json.escalate_to }}',\n    'message', {{ $json.sql.notification_text }}\n  ),\n  'sent',\n  1,\n  now(),\n  NULL\n)\nRETURNING id AS notification_id, alert_id, channel, severity, status, created_at;",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000007",
+      "name": "7 · Registrar notificación (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        320,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Registra la notificación de escalado en soclite.notifications (channel='slack', status='sent') como evidencia de notificación a responsables (ISO 27001 A.5.24)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.audit_log (\n  occurred_at, user_id, username, module, action, entity, entity_id, result,\n  detail, before_data, after_data, ip_address, user_agent, severity\n) VALUES (\n  now(),\n  NULL,\n  'system/n8n',\n  'alerts',\n  'UPDATE'::soclite.audit_action,\n  'alert',\n  {{ $json.sql.alert_id }}::text,\n  'success'::soclite.audit_result,\n  {{ $json.sql.detail }},\n  jsonb_build_object('status', 'pending', 'sla_due_at', '{{ $json.sql.sla_tier }}'),\n  jsonb_build_object('status', 'escalated', 'tier', {{ $json.sql.sla_tier }}, 'seconds_overdue', {{ $json.sql.seconds_overdue }}),\n  {{ $json.sql.origin_ip }}::inet,\n  'n8n-workflow/soc-lite-sla-escalation',\n  CASE WHEN {{ $json.sql.sla_tier }} = 'vencido' THEN 'critical' ELSE 'warning' END\n)\nRETURNING id AS audit_id, occurred_at, hash_self;",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000008",
+      "name": "8 · Bitácora de escalado (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        540,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Audita el cambio de estado pending -> escalated en soclite.audit_log (module='alerts', action='UPDATE', usuario 'system/n8n') con el diff antes/después exigido por la bitácora inmutable."
+    },
+    {
+      "parameters": {},
+      "id": "c3000000-0000-4000-8000-000000000009",
+      "name": "9 · NoOp sin escalado",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        100,
+        440
+      ],
+      "notes": "Salida de fallback: alertas en la ventana de aviso que no requieren notificación inmediata."
+    },
+    {
+      "parameters": {
+        "content": "## SOC-Lite · Escalado de SLA\n\n**Cada 5 min** detecta alertas `pending` con `sla_due_at`:\n- **vencido** → escalado + Slack inmediato\n- **≤ 5 min** → crítico\n- **≤ 10 min** (ventana) → aviso preventivo\n\nSLA por severidad (trigger `trg_alerts_mttt`):\n`critical` 15 min · `high` 1 h · `medium` 8 h · `low/info` 24 h\n\n**Idempotencia**: el `UPDATE … RETURNING` solo devuelve las alertas que transicionan `pending → escalated`, por lo que cada alerta se notifica una sola vez.\n\n📖 Detalle: `docs/05-workflow-n8n.md` §8",
+        "height": 460,
+        "width": 540,
+        "color": 3
+      },
+      "id": "c3000000-0000-4000-8000-0000000000f1",
+      "name": "NOTA · SLA e idempotencia",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        40
+      ],
+      "notes": "Sticky note explicativo del workflow de escalado de SLA."
+    }
+  ],
+  "connections": {
+    "1 · Schedule cada 5 min": {
+      "main": [
+        [
+          {
+            "node": "C · Set parámetros SLA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "C · Set parámetros SLA": {
+      "main": [
+        [
+          {
+            "node": "2 · SELECT y escalar SLA (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 · SELECT y escalar SLA (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "3 · Clasificar y preparar aviso (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3 · Clasificar y preparar aviso (Code)": {
+      "main": [
+        [
+          {
+            "node": "4 · Switch severidad y vencimiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4 · Switch severidad y vencimiento": {
+      "main": [
+        [
+          {
+            "node": "5 · Slack escalado crítico",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "6 · Slack aviso preventivo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "9 · NoOp sin escalado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 · Slack escalado crítico": {
+      "main": [
+        [
+          {
+            "node": "7 · Registrar notificación (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6 · Slack aviso preventivo": {
+      "main": [
+        [
+          {
+            "node": "7 · Registrar notificación (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 · Registrar notificación (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "8 · Bitácora de escalado (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "America/Santiago"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [],
+  "active": false
+}

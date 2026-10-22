@@ -1,0 +1,1 @@
+"""Utilidades auxiliares del backend."""

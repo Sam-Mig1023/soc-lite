@@ -1,0 +1,360 @@
+{
+  "name": "SOC-Lite · 02 · Deduplicación y supresión de ruido (ventana 30 min)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "1 · Schedule cada 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1000,
+        300
+      ],
+      "notes": "Ejecuta la ventana de deduplicación y supresión cada 5 minutos (cron interno */5 * * * *)."
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "DEDUP_WINDOW_MINUTES",
+              "value": "30"
+            },
+            {
+              "name": "DEDUP_MAX_COUNT",
+              "value": "25"
+            },
+            {
+              "name": "SUPPRESS_FP_RATE",
+              "value": "0.9"
+            },
+            {
+              "name": "SOC_SCHEMA",
+              "value": "soclite"
+            },
+            {
+              "name": "N8N_ORIGIN_IP",
+              "value": "10.10.2.90"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-0000000000c0",
+      "name": "C · Set parámetros de ventana",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -800,
+        300
+      ],
+      "notes": "Parámetros de la ventana de deduplicación: 30 min, tope de agrupación (25 eventos) y umbral de tasa de FP por regla (0.90) para la supresión automática."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Ventana de deduplicación de 30 min: agrupa alertas recientes con la misma IP+regla.\n-- Cubre tanto Wazuh (source_ip) como IDS (dest_ip del activo afectado).\nWITH win AS (\n  SELECT a.id,\n         a.source_type,\n         a.rule_id,\n         a.source_ip,\n         a.dest_ip,\n         a.severity,\n         a.rule_level,\n         a.occurred_at,\n         count(*) OVER (PARTITION BY a.source_type, a.rule_id, a.source_ip) AS n_window,\n         first_value(a.id) OVER (PARTITION BY a.source_type, a.rule_id, a.source_ip ORDER BY a.occurred_at ASC) AS keeper_id\n    FROM soclite.alerts a\n   WHERE a.occurred_at >= now() - INTERVAL '{{ $('C · Set parámetros de ventana').first().json.DEDUP_WINDOW_MINUTES }} minutes'\n     AND a.deleted_at IS NULL\n     AND a.source_ip IS NOT NULL\n     AND a.rule_id IS NOT NULL\n)\nSELECT source_type,\n       rule_id,\n       host(source_ip) AS source_ip,\n       max(dest_ip::text) AS dest_ip,\n       n_window::int AS events_in_window,\n       (n_window > 1) AS is_duplicate_group,\n       keeper_id::int AS keeper_alert_id,\n       max(severity::text) AS max_severity,\n       max(rule_level) AS max_rule_level,\n       min(occurred_at) AS first_seen,\n       max(occurred_at) AS last_seen,\n       round(EXTRACT(EPOCH FROM (max(occurred_at) - min(occurred_at))), 1) AS burst_seconds\n  FROM win\n GROUP BY source_type, rule_id, source_ip, n_window, keeper_id\nHAVING count(*) > 1\n ORDER BY events_in_window DESC\n LIMIT 500;",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "2 · SELECT ventana 30 min (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Consulta las alertas de los últimos 30 minutos y agrupa por source_type + rule_id + source_ip (ventana deslizante con función de ventana OVER). Devuelve solo los grupos con más de un evento."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Reglas de supresión: reglas con tasa de falsos positivos conocida >= 0.90 sobre >= 20 triajes.\nSELECT a.rule_id,\n       max(a.rule_description)       AS rule_description,\n       count(*)::int                 AS total,\n       count(*) FILTER (WHERE t.verdict = 'false_positive')::int AS fp,\n       round(100.0 * count(*) FILTER (WHERE t.verdict = 'false_positive') / NULLIF(count(*), 0), 2) AS fp_pct,\n       round(avg(t.confidence), 3)   AS avg_confidence,\n       max(a.occurred_at)            AS last_seen\n  FROM soclite.alerts a\n  JOIN soclite.triage_results t ON t.alert_id = a.id AND t.is_current IS TRUE\n WHERE a.deleted_at IS NULL\n   AND a.occurred_at >= now() - INTERVAL '30 days'\n GROUP BY a.rule_id\nHAVING count(*) >= 20\n   AND (1.0 * count(*) FILTER (WHERE t.verdict = 'false_positive') / NULLIF(count(*), 0)) >= {{ $('C · Set parámetros de ventana').first().json.SUPPRESS_FP_RATE }}\n ORDER BY fp_pct DESC\n LIMIT 100;",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "3 · SELECT reglas FP conocidas (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Reglas de supresión de falsos positivos conocidos: se calculan sobre los 30 días previos con la vista de triajes vigentes (verdict='false_positive' en >= 90 % de >= 20 casos)."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "4 · Merge grupos + reglas FP",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -140,
+        320
+      ],
+      "notes": "Combina la salida de la ventana de duplicados con el catálogo de reglas ruidosas para decidir en un solo nodo Code el dedup_count a aplicar y la supresión."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// SOC-Lite · Decide dedup_count e is_suppressed por grupo de la ventana\n// Entrada: merge de\n//   · 2 · SELECT ventana 30 min  -> {source_type, rule_id, source_ip, events_in_window, keeper_alert_id, ...}\n//   · 3 · SELECT reglas FP       -> {rule_id, fp_pct, total, fp, ...}\n// Salida: un ítem por grupo con el SQL de UPDATE ya compilado.\n// =====================================================================\nconst RULES = new Map();\nconst DEDUP_MAX_COUNT = Number($env.DEDUP_MAX_COUNT || $('C · Set parámetros de ventana').first().json.DEDUP_MAX_COUNT || 25);\nconst WINDOW = Number($('C · Set parámetros de ventana').first().json.DEDUP_WINDOW_MINUTES || 30);\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  if (j.rule_id !== undefined && j.events_in_window === undefined) {\n    RULES.set(String(j.rule_id), j);\n  }\n}\n\nconst esc = (v) => {\n  if (v === null || v === undefined || v === '') return 'NULL';\n  if (typeof v === 'number' && Number.isFinite(v)) return String(v);\n  return \"'\" + String(v).replace(/\\u0000/g, '').replace(/'/g, \"''\") + \"'\";\n};\n\nconst out = [];\nfor (const item of $input.all()) {\n  const g = item.json || {};\n  if (g.events_in_window === undefined || !g.rule_id || !g.source_ip) continue;\n\n  const ruleId = String(g.rule_id);\n  const ruleInfo = RULES.get(ruleId) || {};\n  const fpRate = Number(ruleInfo.fp_pct || 0) / 100;\n  const knownNoise = fpRate >= 0.9 && Number(ruleInfo.total || 0) >= 20;\n  const highVolume = Number(g.events_in_window) >= DEDUP_MAX_COUNT;\n  const suppressed = knownNoise || highVolume;\n  const suppressReason = knownNoise\n    ? 'Regla ' + ruleId + ' con tasa de FP conocida ' + (fpRate * 100).toFixed(1) + ' % (' + ruleInfo.total + ' triajes)'\n    : highVolume\n    ? 'Volumen anómalo: ' + g.events_in_window + ' eventos en ' + WINDOW + ' min (umbral ' + DEDUP_MAX_COUNT + ')'\n    : null;\n\n  out.push({\n    json: {\n      source_type: g.source_type,\n      rule_id: ruleId,\n      source_ip: g.source_ip,\n      dest_ip: g.dest_ip,\n      events_in_window: Number(g.events_in_window),\n      dedup_count: Math.min(Number(g.events_in_window), DEDUP_MAX_COUNT),\n      keeper_alert_id: Number(g.keeper_alert_id),\n      max_severity: g.max_severity,\n      max_rule_level: g.max_rule_level,\n      first_seen: g.first_seen,\n      last_seen: g.last_seen,\n      burst_seconds: g.burst_seconds,\n      suppressed: suppressed,\n      suppress_reason: suppressReason,\n      fp_rate_pct: Number((fpRate * 100).toFixed(2)),\n      action: suppressed ? 'suppress' : 'dedup',\n      sql: {\n        rule_id: esc(ruleId),\n        source_type: esc(g.source_type),\n        source_ip: esc(g.source_ip),\n        dedup_count: Math.min(Number(g.events_in_window), DEDUP_MAX_COUNT),\n        is_suppressed: suppressed ? 'TRUE' : 'FALSE',\n        keeper_alert_id: Number(g.keeper_alert_id),\n        suppress_reason: esc(suppressReason),\n        window_minutes: WINDOW\n      }\n    }\n  });\n}\n\nif (out.length === 0) {\n  // Sin grupos: devuelve el resumen vacío para que el workflow termine limpiamente.\n  return [{ json: { groups: 0, action: 'noop', detail: 'Sin grupos de duplicados en la ventana de ' + WINDOW + ' min' } }];\n}\nreturn out;"
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "5 · Calcular dedup y supresión (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        320
+      ],
+      "notes": "Calcula el dedup_count definitivo (min(eventos en ventana, tope configurable)) y decide la supresión por regla de FP conocida o por volumen anómalo. Si no hay grupos devuelve un único ítem 'noop' para cerrar el workflow."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-is-grupo",
+              "leftValue": "={{ $json.sql !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "6 · IF hay grupos",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        300,
+        320
+      ],
+      "notes": "Rama TRUE: aplicar deduplicación/supresión. Rama FALSE: no había grupos en la ventana y el workflow termina en el NoOp."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Aplica dedup_count/is_suppressed al evento \"guardián\" de cada grupo\n-- (el más antiguo de la ráfaga) y deja constancia en su raw_payload.\nUPDATE soclite.alerts a\n   SET dedup_count   = {{ $json.sql.dedup_count }},\n       is_suppressed = {{ $json.sql.is_suppressed }},\n       raw_payload   = a.raw_payload || jsonb_build_object(\n                         'soc_lite_dedup', jsonb_build_object(\n                           'window_minutes', {{ $json.sql.window_minutes }},\n                           'group_size',     {{ $json.sql.dedup_count }},\n                           'suppressed',     {{ $json.sql.is_suppressed }},\n                           'reason',         {{ $json.sql.suppress_reason }},\n                           'rule_id',        {{ $json.sql.rule_id }},\n                           'source_ip',      {{ $json.sql.source_ip }},\n                           'evaluated_at',   now()\n                         )),\n       updated_at    = now()\n WHERE a.id = {{ $json.sql.keeper_alert_id }}\nRETURNING a.id AS alert_id, a.rule_id, a.dedup_count, a.is_suppressed, a.severity, a.status;",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "7 · UPDATE dedup_count (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        520,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "notes": "Incrementa/fija dedup_count en la alerta representativa del grupo y marca is_suppressed. Añade la traza de la decisión en raw_payload.soc_lite_dedup (trazabilidad ISO 27001 A.8.16)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO soclite.notifications (alert_id, incident_id, channel, target, severity, payload, status, attempts, sent_at)\nSELECT {{ $json.alert_id }},\n       NULL,\n       'internal',\n       'dedup-suppression',\n       {{ $json.severity ? \"'\" + $json.severity + \"'\" : 'NULL' }}::soclite.severity_level,\n       jsonb_build_object(\n         'kind', 'dedup_suppression',\n         'retained_events', {{ $json.dedup_count }},\n         'suppressed', {{ $json.is_suppressed }},\n         'rule_id', {{ \"'\" + $json.rule_id + \"'\" }},\n         'evaluated_at', now()\n       ),\n       'sent',\n       1,\n       now()\nRETURNING id AS notification_id, alert_id, status;",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "8 · Registrar decisión (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        740,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_CON_ID_CREDENCIAL_POSTGRES",
+          "name": "SOC-Lite PostgreSQL (soclite)"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Deja traza de la decisión de deduplicación/supresión en soclite.notifications (channel='internal'), que el backend usa para el KPI de reduction rate (noise_reduction)."
+    },
+    {
+      "parameters": {},
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "name": "9 · NoOp sin cambios",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        520,
+        440
+      ],
+      "notes": "Fin de la rama FALSE: no había grupos de duplicados en la ventana de 30 min."
+    },
+    {
+      "parameters": {
+        "content": "## SOC-Lite · Deduplicación y supresión de ruido\n\n**Cada 5 min** (ventana deslizante de **30 min**)\n\n1. Agrupa alertas recientes por `source_type + rule_id + source_ip`\n2. Calcula reglas con **tasa de FP conocida** ≥ 90 % (≥ 20 triajes en 30 días)\n3. Decide: `dedup_count = min(eventos_ventana, tope)` e `is_suppressed`\n4. Persiste la decisión en `alerts.dedup_count` / `alerts.is_suppressed` + `raw_payload.soc_lite_dedup`\n5. Traza en `notifications` (channel `internal`) para el KPI `noise_reduction`\n\n📖 Detalle: `docs/05-workflow-n8n.md` §7",
+        "height": 420,
+        "width": 520,
+        "color": 5
+      },
+      "id": "b2000000-0000-4000-8000-0000000000f1",
+      "name": "NOTA · Reglas de supresión",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        60
+      ],
+      "notes": "Sticky note explicativo del workflow de deduplicación y supresión."
+    }
+  ],
+  "connections": {
+    "1 · Schedule cada 5 min": {
+      "main": [
+        [
+          {
+            "node": "C · Set parámetros de ventana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "C · Set parámetros de ventana": {
+      "main": [
+        [
+          {
+            "node": "2 · SELECT ventana 30 min (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "3 · SELECT reglas FP conocidas (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 · SELECT ventana 30 min (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "4 · Merge grupos + reglas FP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3 · SELECT reglas FP conocidas (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "4 · Merge grupos + reglas FP",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "4 · Merge grupos + reglas FP": {
+      "main": [
+        [
+          {
+            "node": "5 · Calcular dedup y supresión (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 · Calcular dedup y supresión (Code)": {
+      "main": [
+        [
+          {
+            "node": "6 · IF hay grupos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6 · IF hay grupos": {
+      "main": [
+        [
+          {
+            "node": "7 · UPDATE dedup_count (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "9 · NoOp sin cambios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 · UPDATE dedup_count (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "8 · Registrar decisión (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "America/Santiago"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [],
+  "active": false
+}
