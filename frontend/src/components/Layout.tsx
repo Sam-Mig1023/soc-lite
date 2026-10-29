@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useAuth, usePermission } from '@/context/AuthContext';
 import { ConfirmDialog } from './Modal';
+import { ThemeToggle } from './ThemeToggle';
 import { cx, formatDateTime } from '@/utils/format';
 
 /* ------------------------------------------------------------------ */
@@ -317,6 +318,7 @@ export function Layout(): JSX.Element {
 
             {/* Estado del sistema + perfil */}
             <div className="flex items-center gap-3">
+              <ThemeToggle />
               <span
                 className="hidden items-center gap-1.5 rounded-full border border-emerald-800/70 bg-emerald-950/40 px-2.5 py-1 text-[11px] text-emerald-300 sm:inline-flex"
                 title="Conectado al backend http://localhost:8000/api/v1"

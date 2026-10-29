@@ -12,6 +12,7 @@ import { AlertCircle, Eye, EyeOff, Loader2, LogIn, ShieldHalf, ShieldCheck } fro
 import { useAuth } from '@/context/AuthContext';
 import { getErrorMessage } from '@/utils/errors';
 import { cx } from '@/utils/format';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 /** Esquema de validación del formulario de acceso. */
 const loginSchema = z.object({
@@ -120,7 +121,8 @@ export function Login(): JSX.Element {
         </aside>
 
         {/* Formulario */}
-        <section className="p-6 sm:p-8">
+        <section className="relative p-6 sm:p-8">
+          <ThemeToggle className="absolute right-6 top-5 sm:right-8" />
           <div className="mb-6 lg:hidden">
             <div className="flex items-center gap-2">
               <span className="rounded-lg border border-cyan-800/70 bg-cyan-950/60 p-1.5 text-cyan-400">

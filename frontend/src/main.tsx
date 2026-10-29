@@ -12,6 +12,7 @@ import { queryClient } from '@/api/queryClient';
 import { AuthProvider } from '@/context/AuthContext';
 import { ToastProvider } from '@/components/Toast';
 import { ErrorBoundary } from '@/components/States';
+import { ThemeProvider } from '@/context/ThemeContext';
 import './index.css';
 
 const container = document.getElementById('root');
@@ -24,11 +25,13 @@ ReactDOM.createRoot(container).render(
     <ErrorBoundary>
       <BrowserRouter>
         <QueryClientProvider client={queryClient}>
-          <AuthProvider>
-            <ToastProvider>
-              <App />
-            </ToastProvider>
-          </AuthProvider>
+          <ThemeProvider>
+            <AuthProvider>
+              <ToastProvider>
+                <App />
+              </ToastProvider>
+            </AuthProvider>
+          </ThemeProvider>
         </QueryClientProvider>
       </BrowserRouter>
     </ErrorBoundary>

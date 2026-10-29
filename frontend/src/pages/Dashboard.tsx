@@ -49,23 +49,7 @@ import { SEVERITY_LEVELS, SEVERITY_LABELS, VERDICT_LABELS, type SeverityLevel, t
 import type { SeveritySeriesPoint, TopSourceItem } from '@/types/dashboard';
 import { getErrorMessage } from '@/utils/errors';
 import { cx, formatDuration, formatNumber, formatPercent, toIsoDate, toPercentNumber } from '@/utils/format';
-
-/** Paleta oscura compartida por todos los gráficos. */
-const CHART_THEME = {
-  grid: '#1e293b',
-  axis: '#64748b',
-  tooltipBg: '#0f172a',
-  tooltipBorder: '#334155',
-  target: '#22d3ee',
-} as const;
-
-const TOOLTIP_STYLE = {
-  backgroundColor: CHART_THEME.tooltipBg,
-  border: `1px solid ${CHART_THEME.tooltipBorder}`,
-  borderRadius: '0.5rem',
-  color: '#e2e8f0',
-  fontSize: '12px',
-};
+import { useTheme } from '@/context/ThemeContext';
 
 const toNumber = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
@@ -128,6 +112,22 @@ function Widget({
 
 /** Dashboard principal del SOC. */
 export function Dashboard(): JSX.Element {
+  const { theme } = useTheme();
+  const chartTheme = {
+    grid: theme === 'dark' ? '#1e293b' : '#cbd5e1',
+    axis: theme === 'dark' ? '#64748b' : '#475569',
+    tooltipBg: theme === 'dark' ? '#0f172a' : '#ffffff',
+    tooltipBorder: theme === 'dark' ? '#334155' : '#cbd5e1',
+    tooltipText: theme === 'dark' ? '#e2e8f0' : '#0f172a',
+    target: '#0891b2',
+  };
+  const tooltipStyle = {
+    backgroundColor: chartTheme.tooltipBg,
+    border: `1px solid ${chartTheme.tooltipBorder}`,
+    borderRadius: '0.5rem',
+    color: chartTheme.tooltipText,
+    fontSize: '12px',
+  };
   const [range, setRange] = useState<DateRangeValue>(() => {
     const today = new Date();
     const start = new Date();
@@ -415,10 +415,10 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={severityBars} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
-              <XAxis dataKey="severity" stroke={CHART_THEME.axis} fontSize={11} />
-              <YAxis stroke={CHART_THEME.axis} fontSize={11} allowDecimals={false} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
+              <XAxis dataKey="severity" stroke={chartTheme.axis} fontSize={11} />
+              <YAxis stroke={chartTheme.axis} fontSize={11} allowDecimals={false} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
               <Bar dataKey="total" name="Alertas" radius={[4, 4, 0, 0]}>
                 {severityBars.map((entry) => (
                   <Cell key={entry.key} fill={SEVERITY_CHART_COLORS[entry.key as SeverityLevel]} />
@@ -438,16 +438,16 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={severitySeries} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
               <XAxis
                 dataKey="period"
-                stroke={CHART_THEME.axis}
+                stroke={chartTheme.axis}
                 fontSize={11}
                 tickFormatter={(value: string) => value.slice(5, 10)}
               />
-              <YAxis stroke={CHART_THEME.axis} fontSize={11} allowDecimals={false} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
-              <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+              <YAxis stroke={chartTheme.axis} fontSize={11} allowDecimals={false} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
+              <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
               <Bar dataKey="info" name="Informativa" stackId="sev" fill={SEVERITY_CHART_COLORS.info} />
               <Bar dataKey="low" name="Baja" stackId="sev" fill={SEVERITY_CHART_COLORS.low} />
               <Bar dataKey="medium" name="Media" stackId="sev" fill={SEVERITY_CHART_COLORS.medium} />
@@ -487,21 +487,21 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={mtttSeries} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
-              <XAxis dataKey="date" stroke={CHART_THEME.axis} fontSize={11} tickFormatter={(value: string) => value.slice(5)} />
-              <YAxis stroke={CHART_THEME.axis} fontSize={11} tickFormatter={(value: number) => `${Math.round(value / 60)}m`} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
+              <XAxis dataKey="date" stroke={chartTheme.axis} fontSize={11} tickFormatter={(value: string) => value.slice(5)} />
+              <YAxis stroke={chartTheme.axis} fontSize={11} tickFormatter={(value: number) => `${Math.round(value / 60)}m`} />
               <Tooltip
-                contentStyle={TOOLTIP_STYLE}
+                contentStyle={tooltipStyle}
                 formatter={(value: number, name: string) => [`${formatDuration(value)}`, name]}
               />
-              <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+              <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
               <Line type="monotone" dataKey="mttt" name="MTTT promedio" stroke="#22d3ee" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="p95" name="MTTT p95" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
               <Line
                 type="monotone"
                 dataKey="objetivo"
                 name="Objetivo SLA"
-                stroke={CHART_THEME.target}
+                stroke={chartTheme.target}
                 strokeWidth={1}
                 strokeDasharray="6 4"
                 dot={false}
@@ -546,8 +546,8 @@ export function Dashboard(): JSX.Element {
                     <Cell key={entry.verdict} fill={verdictChartColor(entry.verdict as TriageVerdict)} />
                   ))}
                 </Pie>
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
               </PieChart>
             </ResponsiveContainer>
           )}
@@ -563,11 +563,11 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={slaRows} layout="vertical" margin={{ top: 4, right: 24, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} horizontal={false} />
-              <XAxis type="number" domain={[0, 100]} stroke={CHART_THEME.axis} fontSize={11} tickFormatter={(v: number) => `${v}%`} />
-              <YAxis type="category" dataKey="severity" stroke={CHART_THEME.axis} fontSize={11} width={70} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value: number) => [`${value} %`, 'Cumplimiento']} />
-              <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
+              <XAxis type="number" domain={[0, 100]} stroke={chartTheme.axis} fontSize={11} tickFormatter={(v: number) => `${v}%`} />
+              <YAxis type="category" dataKey="severity" stroke={chartTheme.axis} fontSize={11} width={70} />
+              <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => [`${value} %`, 'Cumplimiento']} />
+              <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
               <Bar dataKey="cumplimiento" name="Cumplimiento" fill="#10b981" radius={[0, 4, 4, 0]} barSize={14} />
               <Bar dataKey="objetivo" name="Objetivo" fill="#334155" radius={[0, 4, 4, 0]} barSize={14} />
             </BarChart>
@@ -584,10 +584,10 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={topIps} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} horizontal={false} />
-              <XAxis type="number" stroke={CHART_THEME.axis} fontSize={11} allowDecimals={false} />
-              <YAxis type="category" dataKey="name" stroke={CHART_THEME.axis} fontSize={10} width={110} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
+              <XAxis type="number" stroke={chartTheme.axis} fontSize={11} allowDecimals={false} />
+              <YAxis type="category" dataKey="name" stroke={chartTheme.axis} fontSize={10} width={110} />
+              <Tooltip contentStyle={tooltipStyle} />
               <Bar dataKey="total" name="Alertas" fill="#22d3ee" radius={[0, 4, 4, 0]} barSize={14} />
             </BarChart>
           </ResponsiveContainer>
@@ -603,10 +603,10 @@ export function Dashboard(): JSX.Element {
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={topRules} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} horizontal={false} />
-              <XAxis type="number" stroke={CHART_THEME.axis} fontSize={11} allowDecimals={false} />
-              <YAxis type="category" dataKey="name" stroke={CHART_THEME.axis} fontSize={10} width={150} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
+              <XAxis type="number" stroke={chartTheme.axis} fontSize={11} allowDecimals={false} />
+              <YAxis type="category" dataKey="name" stroke={chartTheme.axis} fontSize={10} width={150} />
+              <Tooltip contentStyle={tooltipStyle} />
               <Bar dataKey="total" name="Alertas" fill="#10b981" radius={[0, 4, 4, 0]} barSize={14} />
             </BarChart>
           </ResponsiveContainer>
@@ -628,11 +628,11 @@ export function Dashboard(): JSX.Element {
         ) : (
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={workloadRows} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} vertical={false} />
-              <XAxis dataKey="name" stroke={CHART_THEME.axis} fontSize={11} interval={0} angle={-12} textAnchor="end" height={54} />
-              <YAxis stroke={CHART_THEME.axis} fontSize={11} allowDecimals={false} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
-              <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
+              <XAxis dataKey="name" stroke={chartTheme.axis} fontSize={11} interval={0} angle={-12} textAnchor="end" height={54} />
+              <YAxis stroke={chartTheme.axis} fontSize={11} allowDecimals={false} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(34,211,238,0.06)' }} />
+              <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
               <Bar dataKey="abiertas" name="Abiertas" stackId="a" fill="#22d3ee" />
               <Bar dataKey="escaladas" name="Escaladas" stackId="a" fill="#ef4444" />
               <Bar dataKey="cerradas" name="Cerradas" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />

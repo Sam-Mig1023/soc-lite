@@ -1,9 +1,17 @@
 <!doctype html>
 <html lang="es" class="dark">
   <head>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem('soc-lite-theme');
+        if (savedTheme === 'light') {
+          document.documentElement.classList.replace('dark', 'light');
+        }
+      } catch {}
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#020617" />
     <meta
       name="description"
@@ -40,6 +48,19 @@
         color: #94a3b8;
         font-size: 0.875rem;
         letter-spacing: 0.02em;
+      }
+      html.light,
+      html.light body,
+      html.light #root {
+        background-color: #f1f5f9;
+        color: #0f172a;
+      }
+      html.light .boot-spinner {
+        border-color: #cbd5e1;
+        border-top-color: #0891b2;
+      }
+      html.light .boot-text {
+        color: #475569;
       }
       @keyframes boot-spin {
         to {

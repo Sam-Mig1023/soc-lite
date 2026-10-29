@@ -116,7 +116,7 @@ services:
       - GENERIC_TIMEZONE=America/Santiago
       - TZ=America/Santiago
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      - SOC_INGEST_KEY=${SOC_INGEST_KEY}
+      - SOC_INGEST_KEY=${INGEST_API_KEY}
       - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
       - LANGCHAIN_URL=http://langchain:8001/triage
       - OSTICKET_API_URL=${OSTICKET_API_URL}
@@ -232,7 +232,7 @@ Pasos previos obligatorios:
    `psql -U soclite -d soclite -f db/schema.sql && psql … -f db/seed.sql`.
 2. Verificar `/health/ready` del backend y `GET /health` del microservicio LangChain.
 3. Crear las credenciales de la sección 4 y **asignarlas en todos los nodos**.
-4. Definir `SOC_INGEST_KEY` y reiniciar el contenedor n8n.
+4. El `docker-compose.yml` expone `INGEST_API_KEY` del `.env` al contenedor n8n como `SOC_INGEST_KEY`; después de cambiar esa clave, recrear el contenedor n8n.
 5. Importar los cinco workflows y **registrar el Error Workflow global**:
    abrir cada workflow auxiliar (02–05) → **⋯ → Settings → Error Workflow** →
    `SOC-Lite · 01 · Triage automático de alertas (Wazuh/OPNsense → LLM → Ticket → Bitácora)`.

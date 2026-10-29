@@ -67,6 +67,55 @@
   input[type='time'] {
     color-scheme: dark;
   }
+
+  html.light,
+  html.light body {
+    color-scheme: light;
+    background: #f1f5f9;
+    color: #0f172a;
+  }
+
+  html.light body {
+    @apply bg-slate-100 text-slate-900;
+  }
+
+  html.light :focus-visible {
+    @apply ring-cyan-600/70 ring-offset-2 ring-offset-slate-100;
+  }
+
+  html.light ::selection {
+    @apply bg-cyan-200 text-cyan-950;
+  }
+
+  html.light * {
+    scrollbar-color: #94a3b8 transparent;
+  }
+
+  html.light ::-webkit-scrollbar-track {
+    background: #e2e8f0;
+  }
+
+  html.light ::-webkit-scrollbar-thumb {
+    border-color: #e2e8f0;
+    background: #94a3b8;
+  }
+
+  html.light ::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+
+  html.light h1,
+  html.light h2,
+  html.light h3,
+  html.light h4 {
+    color: #0f172a;
+  }
+
+  html.light input[type='date'],
+  html.light input[type='datetime-local'],
+  html.light input[type='time'] {
+    color-scheme: light;
+  }
 }
 
 @layer components {
@@ -163,5 +212,228 @@
 
   .soc-grid-auto {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+}
+
+/* Tema claro global. La interfaz ya utiliza clases Tailwind slate en todos los
+   módulos; remapearlas aquí permite cubrir tablas, formularios, diálogos y
+   estados sin alterar la semántica de colores de severidad. */
+@layer utilities {
+  html.light [class~='bg-slate-950'],
+  html.light [class~='bg-slate-950/40'],
+  html.light [class~='bg-slate-950/50'],
+  html.light [class~='bg-slate-950/60'],
+  html.light [class~='bg-slate-950/80'],
+  html.light [class~='bg-slate-950/90'] {
+    background-color: #f1f5f9 !important;
+  }
+
+  html.light [class~='bg-slate-900'],
+  html.light [class~='bg-slate-900/40'],
+  html.light [class~='bg-slate-900/50'],
+  html.light [class~='bg-slate-900/60'],
+  html.light [class~='bg-slate-900/70'],
+  html.light [class~='bg-slate-900/80'],
+  html.light [class~='bg-slate-900/90'],
+  html.light [class~='bg-slate-900/95'] {
+    background-color: #ffffff !important;
+  }
+
+  html.light [class~='bg-slate-800'],
+  html.light [class~='bg-slate-800/30'],
+  html.light [class~='bg-slate-800/40'],
+  html.light [class~='bg-slate-800/50'],
+  html.light [class~='bg-slate-800/60'],
+  html.light [class~='bg-slate-800/70'],
+  html.light [class~='bg-slate-800/80'] {
+    background-color: #e2e8f0 !important;
+  }
+
+  html.light [class~='bg-slate-700'],
+  html.light [class~='bg-slate-700/30'],
+  html.light [class~='bg-slate-700/50'] {
+    background-color: #cbd5e1 !important;
+  }
+
+  html.light [class~='hover:bg-slate-800']:hover,
+  html.light [class~='hover:bg-slate-800/30']:hover,
+  html.light [class~='hover:bg-slate-800/60']:hover,
+  html.light [class~='hover:bg-slate-800/70']:hover {
+    background-color: #e2e8f0 !important;
+  }
+
+  html.light [class~='text-slate-100'],
+  html.light [class~='text-slate-200'],
+  html.light [class~='text-slate-300'] {
+    color: #0f172a !important;
+  }
+
+  html.light [class~='text-slate-400'] {
+    color: #475569 !important;
+  }
+
+  html.light [class~='text-slate-500'] {
+    color: #64748b !important;
+  }
+
+  html.light [class~='text-slate-600'] {
+    color: #64748b !important;
+  }
+
+  html.light [class~='text-slate-700'] {
+    color: #475569 !important;
+  }
+
+  html.light [class~='border-slate-800'],
+  html.light [class~='border-slate-800/70'],
+  html.light [class~='border-slate-800/60'],
+  html.light [class~='border-slate-800/50'],
+  html.light [class~='border-slate-700'],
+  html.light [class~='border-slate-700/70'],
+  html.light [class~='border-slate-700/60'] {
+    border-color: #cbd5e1 !important;
+  }
+
+  html.light [class~='border-slate-600'],
+  html.light [class~='border-slate-500'] {
+    border-color: #94a3b8 !important;
+  }
+
+  html.light [class~='bg-cyan-950/30'],
+  html.light [class~='bg-cyan-950/40'],
+  html.light [class~='bg-cyan-950/50'],
+  html.light [class~='bg-cyan-950/60'],
+  html.light [class~='bg-cyan-950/70'] {
+    background-color: #cffafe !important;
+  }
+
+  html.light [class~='bg-emerald-950/30'],
+  html.light [class~='bg-emerald-950/40'],
+  html.light [class~='bg-emerald-950/50'],
+  html.light [class~='bg-emerald-950/60'],
+  html.light [class~='bg-emerald-950/80'] {
+    background-color: #d1fae5 !important;
+  }
+
+  html.light [class~='bg-amber-950/30'],
+  html.light [class~='bg-amber-950/40'],
+  html.light [class~='bg-amber-950/50'],
+  html.light [class~='bg-amber-950/60'],
+  html.light [class~='bg-amber-950/80'],
+  html.light [class~='bg-amber-950/20'],
+  html.light [class~='bg-amber-950/10'] {
+    background-color: #fef3c7 !important;
+  }
+
+  html.light [class~='bg-red-950/30'],
+  html.light [class~='bg-red-950/40'],
+  html.light [class~='bg-red-950/50'],
+  html.light [class~='bg-red-950/60'],
+  html.light [class~='bg-red-950/80'],
+  html.light [class~='bg-red-900/40'] {
+    background-color: #fee2e2 !important;
+  }
+
+  html.light [class~='bg-cyan-950/80'] { background-color: #cffafe !important; }
+
+  html.light [class~='bg-amber-900/30'] { background-color: #fef3c7 !important; }
+  html.light [class~='bg-orange-950/50'],
+  html.light [class~='bg-orange-900/30'] { background-color: #ffedd5 !important; }
+  html.light [class~='bg-sky-900/30'] { background-color: #e0f2fe !important; }
+
+  html.light [class~='bg-indigo-950/40'],
+  html.light [class~='bg-indigo-950/50'] {
+    background-color: #e0e7ff !important;
+  }
+
+  html.light [class~='text-cyan-100'],
+  html.light [class~='text-cyan-200'],
+  html.light [class~='text-cyan-300'],
+  html.light [class~='text-cyan-400'] { color: #155e75 !important; }
+  html.light [class~='text-emerald-100'],
+  html.light [class~='text-emerald-200'],
+  html.light [class~='text-emerald-300'],
+  html.light [class~='text-emerald-400'] { color: #065f46 !important; }
+  html.light [class~='text-amber-100'],
+  html.light [class~='text-amber-200'],
+  html.light [class~='text-amber-300'],
+  html.light [class~='text-amber-400'] { color: #92400e !important; }
+  html.light [class~='text-red-100'],
+  html.light [class~='text-red-200'],
+  html.light [class~='text-red-300'],
+  html.light [class~='text-red-400'] { color: #991b1b !important; }
+  html.light [class~='text-indigo-100'],
+  html.light [class~='text-indigo-200'],
+  html.light [class~='text-indigo-300'] { color: #3730a3 !important; }
+  html.light [class~='text-orange-200'],
+  html.light [class~='text-orange-300'] { color: #9a3412 !important; }
+  html.light [class~='text-sky-300'],
+  html.light [class~='text-sky-400'] { color: #075985 !important; }
+
+  html.light [class~='border-cyan-800'],
+  html.light [class~='border-cyan-800/70'],
+  html.light [class~='border-cyan-800/60'],
+  html.light [class~='border-cyan-700/70'] { border-color: #67e8f9 !important; }
+  html.light [class~='border-emerald-800'],
+  html.light [class~='border-emerald-800/70'],
+  html.light [class~='border-emerald-800/60'],
+  html.light [class~='border-emerald-700/70'] { border-color: #6ee7b7 !important; }
+  html.light [class~='border-amber-800'],
+  html.light [class~='border-amber-900/60'],
+  html.light [class~='border-amber-800/60'],
+  html.light [class~='border-amber-800/70'],
+  html.light [class~='border-amber-700/70'] { border-color: #fcd34d !important; }
+  html.light [class~='border-red-800'],
+  html.light [class~='border-red-900/60'],
+  html.light [class~='border-red-800/70'],
+  html.light [class~='border-red-700/70'] { border-color: #fca5a5 !important; }
+  html.light [class~='border-indigo-800/70'],
+  html.light [class~='border-indigo-700/70'] { border-color: #a5b4fc !important; }
+  html.light [class~='border-orange-700/70'] { border-color: #fdba74 !important; }
+  html.light [class~='border-sky-700/70'] { border-color: #7dd3fc !important; }
+  html.light [class~='border-slate-600/70'] { border-color: #94a3b8 !important; }
+
+  html.light [class~='bg-gradient-to-br'] {
+    background-image: linear-gradient(135deg, #ffffff 0%, #f1f5f9 58%, #cffafe 100%) !important;
+  }
+
+  html.light .soc-panel {
+    border-color: #cbd5e1;
+    background-color: rgb(255 255 255 / 0.92);
+  }
+
+  html.light .soc-panel-header,
+  html.light .soc-th {
+    border-color: #cbd5e1;
+  }
+
+  html.light .soc-th {
+    background-color: #f1f5f9;
+    color: #475569;
+  }
+
+  html.light .soc-td {
+    border-color: #e2e8f0;
+    color: #1e293b;
+  }
+
+  html.light .soc-input {
+    border-color: #cbd5e1;
+    background-color: #ffffff;
+    color: #0f172a;
+  }
+
+  html.light .soc-input::placeholder {
+    color: #64748b;
+  }
+
+  html.light .soc-btn-secondary {
+    border-color: #cbd5e1;
+    background-color: #e2e8f0;
+    color: #0f172a;
+  }
+
+  html.light .soc-btn-ghost {
+    color: #334155;
   }
 }

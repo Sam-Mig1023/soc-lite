@@ -51,6 +51,7 @@ import type { TriageResultListItem } from '@/types/alert';
 import { SEVERITY_LEVELS, VERDICT_LABELS } from '@/types/enums';
 import type { TriageVerdict } from '@/types/enums';
 import { getErrorMessage } from '@/utils/errors';
+import { useTheme } from '@/context/ThemeContext';
 import {
   cx,
   formatDateTime,
@@ -68,14 +69,6 @@ const DAY_OPTIONS: Array<{ value: number; label: string }> = [
   { value: 365, label: 'Último año' },
 ];
 
-const TOOLTIP_STYLE = {
-  backgroundColor: '#0f172a',
-  border: '1px solid #1e293b',
-  borderRadius: '0.5rem',
-  color: '#e2e8f0',
-  fontSize: '0.75rem',
-};
-
 interface NamedValue {
   name: string;
   value: number;
@@ -83,6 +76,16 @@ interface NamedValue {
 }
 
 export function TriageStats(): JSX.Element {
+  const { theme } = useTheme();
+  const chartGrid = theme === 'dark' ? '#1e293b' : '#cbd5e1';
+  const chartAxis = theme === 'dark' ? '#64748b' : '#475569';
+  const tooltipStyle = {
+    backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
+    border: `1px solid ${theme === 'dark' ? '#334155' : '#cbd5e1'}`,
+    borderRadius: '0.5rem',
+    color: theme === 'dark' ? '#e2e8f0' : '#0f172a',
+    fontSize: '0.75rem',
+  };
   const [days, setDays] = useState(30);
   const [verdictFilter, setVerdictFilter] = useState<TriageVerdict | ''>('');
   const [page, setPage] = useState(1);
@@ -409,8 +412,8 @@ export function TriageStats(): JSX.Element {
                     <Cell key={entry.verdict ?? entry.name} fill={verdictChartColor(entry.verdict ?? '')} />
                   ))}
                 </Pie>
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem', color: '#94a3b8' }} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem', color: chartAxis }} />
               </PieChart>
             </ResponsiveContainer>
           )}
@@ -423,10 +426,10 @@ export function TriageStats(): JSX.Element {
           ) : (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={latencySeries}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="metric" stroke="#64748b" fontSize={12} />
-                <YAxis stroke="#64748b" fontSize={12} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                <XAxis dataKey="metric" stroke={chartAxis} fontSize={12} />
+                <YAxis stroke={chartAxis} fontSize={12} />
+                <Tooltip contentStyle={tooltipStyle} />
                 <Bar dataKey="ms" fill="#06b6d4" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -440,11 +443,11 @@ export function TriageStats(): JSX.Element {
           ) : (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={modelSeries} layout="vertical" margin={{ left: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis type="number" stroke="#64748b" fontSize={12} />
-                <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} width={130} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem', color: '#94a3b8' }} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                <XAxis type="number" stroke={chartAxis} fontSize={12} />
+                <YAxis type="category" dataKey="name" stroke={chartAxis} fontSize={11} width={130} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem', color: chartAxis }} />
                 <Bar dataKey="ejecuciones" fill="#22d3ee" radius={[0, 4, 4, 0]} />
                 <Bar dataKey="confianza" fill="#34d399" radius={[0, 4, 4, 0]} />
               </BarChart>
@@ -461,10 +464,10 @@ export function TriageStats(): JSX.Element {
           ) : (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={toolSeries} layout="vertical" margin={{ left: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis type="number" stroke="#64748b" fontSize={12} />
-                <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} width={170} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                <XAxis type="number" stroke={chartAxis} fontSize={12} />
+                <YAxis type="category" dataKey="name" stroke={chartAxis} fontSize={11} width={170} />
+                <Tooltip contentStyle={tooltipStyle} />
                 <Bar dataKey="invocaciones" fill="#a78bfa" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>

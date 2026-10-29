@@ -203,11 +203,14 @@ services:
       N8N_HOST: ${N8N_HOST:-0.0.0.0}
       N8N_PORT: 5678
       N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      NODE_FUNCTION_ALLOW_BUILTIN: "crypto"
       GENERIC_TIMEZONE: ${TIMEZONE:-America/Santiago}
       N8N_BASIC_AUTH_ACTIVE: "true"
       N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
       N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-cambiar}
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-cambiar-clave-cifrado}
+      SOC_INGEST_KEY: ${INGEST_API_KEY}
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
