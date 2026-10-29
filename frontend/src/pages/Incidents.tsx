@@ -4,7 +4,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ExternalLink, Plus, Siren, Users } from 'lucide-react';
 import { incidentsApi } from '@/api/incidents';
 import { usersApi } from '@/api/users';
@@ -45,6 +45,7 @@ const EMPTY_FORM: IncidentCreateRequest = {
 
 /** Listado de incidentes con alta manual. */
 export function Incidents(): JSX.Element {
+  const navigate = useNavigate();
   const { permissions } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -315,6 +316,8 @@ export function Incidents(): JSX.Element {
           loading={incidentsQuery.isPending || incidentsQuery.isFetching}
           error={incidentsQuery.isError ? getErrorMessage(incidentsQuery.error) : null}
           onRetry={() => void incidentsQuery.refetch()}
+          onRowClick={(row) => navigate(`/incidents/${row.id}`)}
+          rowActionLabel={(row) => `Abrir incidente ${row.incident_code}: ${row.title}`}
           sortBy={sort.by}
           sortDir={sort.dir}
           onSortChange={(by, dir) => setSort({ by, dir })}

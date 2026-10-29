@@ -43,6 +43,8 @@ export interface DataTableProps<T> {
   onSelectionChange?: (keys: Array<string | number>) => void;
 
   onRowClick?: (row: T) => void;
+  /** Nombre accesible de la acción de abrir una fila enfocada. */
+  rowActionLabel?: (row: T) => string;
   rowClassName?: (row: T) => string | undefined;
 
   /** Ordenamiento controlado (server-side). */
@@ -112,6 +114,7 @@ export function DataTable<T>({
   selectedKeys = [],
   onSelectionChange,
   onRowClick,
+  rowActionLabel,
   rowClassName,
   sortBy,
   sortDir,
@@ -229,16 +232,32 @@ export function DataTable<T>({
               data.map((row, index) => {
                 const key = keys[index];
                 const selected = selectedKeys.includes(key);
+                const isInteractiveTarget = (target: EventTarget | null): boolean =>
+                  target instanceof Element &&
+                  Boolean(target.closest('a, button, input, select, textarea, [role="button"], [role="link"]'));
                 return (
                   <tr
                     key={String(key)}
+                    tabIndex={onRowClick ? 0 : undefined}
+                    aria-label={onRowClick ? rowActionLabel?.(row) ?? `Abrir detalle de la fila ${String(key)}` : undefined}
+                    aria-keyshortcuts={onRowClick ? 'Enter Space' : undefined}
+                    title={onRowClick ? 'Abrir con Enter o Espacio' : undefined}
                     className={cx(
                       'transition-colors',
                       selected ? 'bg-cyan-950/30' : 'hover:bg-slate-800/40',
-                      onRowClick && 'cursor-pointer',
+                      onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-500',
                       rowClassName?.(row),
                     )}
-                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    onClick={onRowClick ? (event) => {
+                      if (!isInteractiveTarget(event.target)) onRowClick(row);
+                    } : undefined}
+                    onKeyDown={onRowClick ? (event) => {
+                      if (isInteractiveTarget(event.target)) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onRowClick(row);
+                      }
+                    } : undefined}
                   >
                     {selectable ? (
                       <td className="soc-td w-10" onClick={(event) => event.stopPropagation()}>

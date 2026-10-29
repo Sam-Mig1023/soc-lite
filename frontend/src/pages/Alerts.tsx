@@ -5,7 +5,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { BellRing, Download, ExternalLink, ShieldCheck, Zap } from 'lucide-react';
 import { alertsApi } from '@/api/alerts';
 import { reportsApi } from '@/api/reports';
@@ -46,6 +46,7 @@ interface FiltersState {
 
 /** Listado de alertas con filtros y acciones masivas. */
 export function Alerts(): JSX.Element {
+  const navigate = useNavigate();
   const { permissions } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -489,6 +490,8 @@ export function Alerts(): JSX.Element {
           selectable={canWrite}
           selectedKeys={selected}
           onSelectionChange={setSelected}
+          onRowClick={(row) => navigate(`/alerts/${row.id}`)}
+          rowActionLabel={(row) => `Abrir alerta #${row.id}, ${SEVERITY_LABELS[row.severity]}, ${ALERT_STATUS_LABELS[row.status]}`}
           sortBy={sort.by}
           sortDir={sort.dir}
           onSortChange={handleSortChange}
