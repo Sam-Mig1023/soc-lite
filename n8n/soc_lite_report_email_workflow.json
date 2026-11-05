@@ -1,0 +1,70 @@
+{
+  "name": "SOC-Lite · Envío de reportes por correo desde la interfaz",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "soc-lite/report-email",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "f6000000-0000-4000-8000-000000000001",
+      "name": "1 · Solicitud autenticada del frontend",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "soc-lite-report-email",
+      "notes": "Webhook interno invocado por el backend. Requiere una credencial Header Auth con header X-Report-Trigger-Key y el mismo secreto configurado en N8N_REPORT_EMAIL_WEBHOOK_SECRET. El archivo llega como binario 'data'."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.body.from_email }}",
+        "toEmail": "={{ $json.body.to_email }}",
+        "subject": "={{ 'SOC-Lite · ' + $json.body.report_title }}",
+        "emailFormat": "text",
+        "text": "={{ 'Se adjunta el reporte solicitado desde SOC-Lite.\\n\\nReporte: ' + $json.body.report_title + '\\nPeriodo: ' + $json.body.period_from + ' → ' + $json.body.period_to + '\\nID: ' + $json.body.report_id + '\\nSHA-256: ' + $json.body.checksum_sha256 + '\\n\\nEste correo fue enviado automáticamente por n8n.' }}",
+        "options": {
+          "fileAttachments": "data",
+          "appendAttribution": false
+        }
+      },
+      "id": "f6000000-0000-4000-8000-000000000002",
+      "name": "2 · Enviar reporte adjunto (SMTP)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        280,
+        300
+      ],
+      "notes": "Selecciona la credencial SMTP existente en la propiedad Credential. El correo se confirma al backend solo cuando el nodo termina correctamente."
+    }
+  ],
+  "connections": {
+    "1 · Solicitud autenticada del frontend": {
+      "main": [
+        [
+          {
+            "node": "2 · Enviar reporte adjunto (SMTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f6000000-0000-4000-8000-000000000003",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

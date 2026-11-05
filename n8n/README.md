@@ -18,6 +18,7 @@ programados de **SLA**, **métricas** y **reportes**.
 | 03 | `soc_lite_sla_escalation_workflow.json` | SOC-Lite · 03 · Escalado de SLA | Schedule cada 5 min | 11 | Auxiliar |
 | 04 | `soc_lite_metrics_aggregation_workflow.json` | SOC-Lite · 04 · Agregación de métricas diarias y ANALYZE | Schedule diario 00:30 | 10 | Auxiliar |
 | 05 | `soc_lite_report_generation_workflow.json` | SOC-Lite · 05 · Generación de reporte operativo semanal | Schedule lunes 07:00 | 13 | Auxiliar |
+| 06 | `soc_lite_report_email_workflow.json` | SOC-Lite · Envío de reportes por correo desde la interfaz | Webhook interno autenticado | 2 | **Acción del frontend** |
 
 **Dependencias:** todos los workflows escriben/leen en PostgreSQL (`soclite`). El
 workflow 01 depende además del microservicio LangChain (`http://langchain:8001`) y de
@@ -37,7 +38,7 @@ la sección 1 del documento de diseño). Comprobado con los nodos base
 
 1. Entrar en n8n (`https://n8n.org.local` o `http://localhost:5678`).
 2. **Workflows → ⋯ → Import from File** y seleccionar cada `.json`.
-3. Repetir con los cinco archivos.
+3. Repetir con los seis archivos.
 4. **Guardar** cada workflow (aparecerán inactivos).
 
 ### Opción B — CLI (importación por lotes)
@@ -45,7 +46,7 @@ la sección 1 del documento de diseño). Comprobado con los nodos base
 ```bash
 # Dentro del contenedor n8n (o con n8n CLI instalado en el host)
 docker compose exec -T n8n n8n import:workflow --separate --input=/data/n8n/soc-lite
-# (los 5 .json deben estar copiados en /data/n8n/soc-lite)
+# (los 6 .json deben estar copiados en /data/n8n/soc-lite)
 ```
 
 ### Opción C — API pública de n8n
@@ -102,6 +103,8 @@ Los JSON **no contienen secretos**. Se leen del entorno del contenedor
 | `REPORT_RECIPIENTS` | 05 | `soc_manager@org.local,ciso@org.local` | Destinatarios del correo semanal. |
 | `REPORT_SLACK_CHANNEL` | 05 | `#soc-reportes` | Canal de aviso del reporte. |
 | `SMTP_FROM` | 05 | `soc-lite@org.local` | Remitente del correo. |
+| `N8N_REPORT_EMAIL_WEBHOOK_URL` | Backend | `http://n8n:5678/webhook/soc-lite/report-email` | Webhook de entrega usado por el botón de correo en Reportes. |
+| `N8N_REPORT_EMAIL_WEBHOOK_SECRET` | Backend y credencial n8n | secreto aleatorio | Secreto compartido para autenticar el backend ante el webhook del workflow 06. |
 
 Ejemplo de `docker-compose.yml`:
 
@@ -191,12 +194,23 @@ credencial nativa:
 3. En el nodo 1b, comentar el bloque `if (!safeEqual(ingestKey, ENV_KEY))` (n8n ya
    rechazó la petición antes de llegar al workflow).
 
-### 4.4 SMTP — `SOC-Lite SMTP` (workflow 05)
+### 4.4 SMTP — `SOC-Lite SMTP` (workflows 05 y 06)
 
 Host/puerto del relay corporativo, usuario, contraseña y *Secure* (STARTTLS). Remitente
 por defecto en `SMTP_FROM`.
 
-### 4.5 Telegram (opcional, variante del nodo 8b)
+### 4.5 Header Auth — envío solicitado desde el frontend (workflow 06)
+
+1. Copia el valor de `N8N_REPORT_EMAIL_WEBHOOK_SECRET` desde el `.env` de la raíz.
+2. En **Credentials → Create credential → Header Auth**, configura *Name* como
+   `X-Report-Trigger-Key` y *Value* con ese mismo secreto.
+3. En el nodo **1 · Solicitud autenticada del frontend**, selecciona esta credencial.
+4. En el nodo **2 · Enviar reporte adjunto (SMTP)**, selecciona `SOC-Lite SMTP`.
+
+El backend ya tiene configurada la URL interna `http://n8n:5678/webhook/soc-lite/report-email`
+y un secreto local en `.env`. No pegues el secreto en el chat ni lo subas a GitHub.
+
+### 4.6 Telegram (opcional, variante del nodo 8b)
 
 1. Crear el bot con `@BotFather` y obtener `TELEGRAM_BOT_TOKEN`.
 2. Añadir el bot al grupo y obtener el `chat_id` (p. ej. `-1001234567890`).
@@ -205,7 +219,7 @@ por defecto en `SMTP_FROM`.
    (`n8n-nodes-base.telegram`, `typeVersion 1.2`) con `chatId = {{ $env.TELEGRAM_CHAT_ID }}`
    y el mismo texto que el mensaje de Slack (plantilla lista en el propio nodo 8b).
 
-### 4.6 Almacenamiento de reportes (workflow 05)
+### 4.7 Almacenamiento de reportes (workflow 05)
 
 * **S3/MinIO** (por defecto, nodo `6`): `PUT` con `Authorization` precalculada en
   `REPORT_UPLOAD_AUTH`, o bien sustituir el nodo HTTP por un nodo **S3** con credencial
@@ -224,6 +238,7 @@ por defecto en `SMTP_FROM`.
 3) soc_lite_sla_escalation_workflow    → activar
 4) soc_lite_metrics_aggregation_workflow → activar
 5) soc_lite_report_generation_workflow → activar
+6) soc_lite_report_email_workflow → activar (webhook para el botón del frontend)
 ```
 
 Pasos previos obligatorios:
@@ -233,7 +248,7 @@ Pasos previos obligatorios:
 2. Verificar `/health/ready` del backend y `GET /health` del microservicio LangChain.
 3. Crear las credenciales de la sección 4 y **asignarlas en todos los nodos**.
 4. El `docker-compose.yml` expone `INGEST_API_KEY` del `.env` al contenedor n8n como `SOC_INGEST_KEY`; después de cambiar esa clave, recrear el contenedor n8n.
-5. Importar los cinco workflows y **registrar el Error Workflow global**:
+5. Importar los seis workflows y **registrar el Error Workflow global**:
    abrir cada workflow auxiliar (02–05) → **⋯ → Settings → Error Workflow** →
    `SOC-Lite · 01 · Triage automático de alertas (Wazuh/OPNsense → LLM → Ticket → Bitácora)`.
 6. Activar en el orden indicado.
@@ -409,6 +424,29 @@ correo, y con el del archivo en disco/S3 (`sha256sum`), para validar la integrid
 
 ---
 
+### Envío de reportes desde el frontend (workflow 06)
+
+El botón **Enviar reporte por correo** genera el archivo dentro del backend, lo guarda en el
+historial y en la bitácora, y lo envía a n8n como adjunto binario. El workflow 06 lo entrega
+con su nodo **Send Email** y la credencial SMTP seleccionada. La respuesta de n8n vuelve al
+backend; la interfaz confirma el envío o muestra el error.
+
+1. En el `.env` de la raíz, define `N8N_REPORT_EMAIL_WEBHOOK_URL=http://n8n:5678/webhook/soc-lite/report-email`.
+2. Define `N8N_REPORT_EMAIL_WEBHOOK_SECRET` con un secreto aleatorio largo. Usa el mismo
+   valor en una credencial n8n **Header Auth**, con nombre de header `X-Report-Trigger-Key`.
+3. Importa `soc_lite_report_email_workflow.json`.
+4. En el nodo Webhook, selecciona esa credencial **Header Auth**. En el nodo de correo,
+   selecciona la credencial SMTP que ya configuraste.
+5. Guarda y activa el workflow 06. La URL de producción debe ser
+   `http://n8n:5678/webhook/soc-lite/report-email`.
+6. Reconstruye el backend para que lea el `.env` actualizado: `docker compose up -d --build backend`.
+7. En **Reportes**, selecciona tipo/formato/rango, revisa el correo destinatario y pulsa
+   **Enviar reporte por correo**. El archivo llegará adjunto; **Generar y descargar** sigue
+   siendo una acción independiente.
+
+Si n8n o SMTP falla, la pantalla muestra error; el reporte ya generado permanece en el
+historial para descargarlo o reintentar el envío.
+
 ## 7. Operación y diagnóstico
 
 | Síntoma | Causa probable | Acción |
@@ -465,7 +503,8 @@ n8n/
 ├── soc_lite_dedup_suppression_workflow.json        ← 02 (Schedule 5 min)
 ├── soc_lite_sla_escalation_workflow.json           ← 03 (Schedule 5 min)
 ├── soc_lite_metrics_aggregation_workflow.json      ← 04 (Schedule 00:30)
-└── soc_lite_report_generation_workflow.json        ← 05 (Schedule lunes 07:00)
+├── soc_lite_report_generation_workflow.json        ← 05 (Schedule lunes 07:00)
+└── soc_lite_report_email_workflow.json             ← 06 (Webhook interno → SMTP)
 ```
 
 Todos los JSON están validados sintácticamente

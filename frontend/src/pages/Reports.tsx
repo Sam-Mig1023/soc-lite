@@ -7,7 +7,7 @@
  *
  * Requisitos cubiertos: "Reportes operacionales y de gestión exportables en PDF, Word y Excel".
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarClock,
@@ -17,6 +17,7 @@ import {
   FileType,
   Loader2,
   RefreshCw,
+  Send,
   ShieldCheck,
 } from 'lucide-react';
 import {
@@ -123,6 +124,8 @@ export function Reports(): JSX.Element {
   }));
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [recipientEmail, setRecipientEmail] = useState(auth.user?.email ?? '');
+  const recipientInputRef = useRef<HTMLInputElement>(null);
 
   const definition = useMemo(
     () => REPORT_DEFINITIONS.find((item) => item.type === reportType) ?? REPORT_DEFINITIONS[0],
@@ -181,6 +184,24 @@ export function Reports(): JSX.Element {
     },
   });
 
+  const emailMutation = useMutation({
+    mutationFn: () => reportsApi.sendByEmail({
+      report_type: definition.type,
+      format,
+      from: isoFrom(range.from),
+      to: isoTo(range.to),
+      period,
+      to_email: recipientEmail.trim(),
+    }),
+    onSuccess: async (result) => {
+      toast.success('Reporte enviado por correo', `${result.filename} · ${result.to_email}`);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.reports.all() });
+    },
+    onError: (error: unknown) => {
+      toast.error('No se pudo enviar el reporte', getErrorMessage(error));
+    },
+  });
+
   const downloadMutation = useMutation({
     mutationFn: async (report: GeneratedReport) => {
       const fmt = (report.report_format as ReportFormat) ?? 'pdf';
@@ -202,6 +223,15 @@ export function Reports(): JSX.Element {
     }
     generateMutation.mutate();
   }, [canGenerateSelected, generateMutation, toast]);
+
+  const handleEmailReport = useCallback(() => {
+    if (!canGenerateSelected) {
+      toast.warning('Permisos insuficientes', 'Tu rol no permite exportar este tipo de reporte.');
+      return;
+    }
+    if (!recipientInputRef.current?.reportValidity()) return;
+    emailMutation.mutate();
+  }, [canGenerateSelected, emailMutation, toast]);
 
   /* ---------------------------------------------------------------- */
   /* Tabla del historial                                               */
@@ -458,11 +488,31 @@ export function Reports(): JSX.Element {
             ) : null}
 
             <DateRangePicker value={range} onChange={setRange} label="Rango del reporte" />
+
+            <FilterField label="Enviar a este correo" htmlFor="report-recipient-email">
+              <input
+                ref={recipientInputRef}
+                id="report-recipient-email"
+                className="soc-input"
+                type="email"
+                autoComplete="email"
+                placeholder="nombre@dominio.com"
+                value={recipientEmail}
+                onChange={(event) => setRecipientEmail(event.target.value)}
+                required
+                aria-describedby="report-recipient-hint"
+              />
+              <span id="report-recipient-hint" className="mt-1 block text-xs text-slate-500">
+                El archivo se enviará adjunto a esta dirección.
+              </span>
+            </FilterField>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-4">
-            <p className="max-w-2xl text-xs text-slate-400">{definition.description}</p>
-            <div className="flex items-center gap-2">
+            <p className="max-w-2xl text-xs text-slate-400">
+              {definition.description} “Generar y descargar” solo descarga el archivo; para recibirlo por correo usa el botón separado.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
               {!canGenerateSelected ? (
                 <span className="text-xs text-amber-400">
                   Falta el permiso {definition.type === 'audit' ? 'audit:export' : 'reports:export'}
@@ -472,14 +522,28 @@ export function Reports(): JSX.Element {
                 type="button"
                 className="soc-btn-primary"
                 onClick={handleGenerate}
-                disabled={generateMutation.isPending || !canGenerateSelected}
+                disabled={generateMutation.isPending || emailMutation.isPending || !canGenerateSelected}
               >
                 {generateMutation.isPending ? (
                   <Loader2 size={15} className="animate-spin" aria-hidden="true" />
                 ) : (
                   <Download size={15} aria-hidden="true" />
                 )}
-                Generar y descargar
+                {generateMutation.isPending ? 'Generando…' : 'Generar y descargar'}
+              </button>
+              <button
+                type="button"
+                className="soc-btn-secondary"
+                onClick={handleEmailReport}
+                disabled={emailMutation.isPending || generateMutation.isPending || !canGenerateSelected}
+                aria-label={`Enviar ${REPORT_TYPE_LABELS[definition.type]} por correo`}
+              >
+                {emailMutation.isPending ? (
+                  <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <Send size={15} aria-hidden="true" />
+                )}
+                {emailMutation.isPending ? 'Generando y enviando…' : 'Enviar reporte por correo'}
               </button>
             </div>
           </div>

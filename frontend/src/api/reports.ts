@@ -32,6 +32,20 @@ export interface ManagementReportRequest extends ReportRequestBase {
   period?: 'weekly' | 'monthly' | 'quarterly';
 }
 
+export interface EmailReportRequest extends ReportRequestBase {
+  report_type: ReportType;
+  to_email: string;
+  period?: 'weekly' | 'monthly' | 'quarterly';
+}
+
+export interface EmailReportResult {
+  status: 'sent';
+  report_id: number;
+  to_email: string;
+  filename: string;
+  message: string;
+}
+
 function filenameFor(type: ReportType, format: ReportFormat): string {
   const stamp = new Date().toISOString().slice(0, 10);
   return `soc-lite-${type}-${stamp}.${REPORT_EXTENSIONS[format]}`;
@@ -64,6 +78,22 @@ export async function generateAudit(req: ReportRequestBase): Promise<DownloadedF
   );
 }
 
+/** POST /reports/email — genera el archivo y solicita a n8n su entrega por SMTP. */
+export async function sendByEmail(req: EmailReportRequest): Promise<EmailReportResult> {
+  return http.post<EmailReportResult>(
+    '/reports/email',
+    {
+      report_type: req.report_type,
+      format: req.format,
+      from: req.from,
+      to: req.to,
+      period: req.period,
+      to_email: req.to_email,
+    },
+    { timeout: 300_000, skipErrorToast: true },
+  );
+}
+
 /** GET /reports/inventory — historial de reportes generados. */
 export async function inventory(
   query: { page?: number; page_size?: number } = {},
@@ -80,6 +110,7 @@ export const reportsApi = {
   generateOperational,
   generateManagement,
   generateAudit,
+  sendByEmail,
   inventory,
   download,
   REPORT_MIME_TYPES,

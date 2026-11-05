@@ -133,6 +133,8 @@ class Settings(BaseSettings):
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_FROM: str = "soc-lite@org.local"
+    N8N_REPORT_EMAIL_WEBHOOK_URL: str | None = None
+    N8N_REPORT_EMAIL_WEBHOOK_SECRET: str | None = None
     OSTICKET_BASE_URL: str | None = None
     OSTICKET_API_KEY: str | None = None
     REDMINE_BASE_URL: str | None = None

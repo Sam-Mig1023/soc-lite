@@ -1304,7 +1304,7 @@ Wazuh (evento)                                    →  alerts.raw_payload (JSONB
 
 ## 13. Supuestos y decisiones de diseño
 
-1. **Estado de los artefactos.** Los cinco JSON son exports de n8n **inactivos**
+1. **Estado de los artefactos.** Los seis JSON son exports de n8n **inactivos**
    (`"active": false`) y sus credenciales llevan el marcador
    `REEMPLAZAR_CON_ID_CREDENCIAL_*` (n8n no puede resolver credenciales de otra instancia).
 2. **Error Workflow por nombre.** n8n referencia el error workflow por **nombre**, no por

@@ -4,14 +4,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 
-from app.api.deps import AuditExporter, DbSession, ReportExporter, ReportReader
+from app.api.deps import AuditExporter, AuthenticatedUser, DbSession, ReportExporter, ReportReader
 from app.core.config import settings
 from app.models import GeneratedReport
-from app.models.enums import AuditAction, ReportFormat
+from app.models.enums import AuditAction, AuditResult, ReportFormat
 from app.schemas.common import Page
 from app.schemas.dashboard import GeneratedReportRead
 from app.services.audit_service import AuditService
@@ -35,7 +37,10 @@ def _resolve_range(date_from: datetime | None, date_to: datetime | None, period:
     return to - timedelta(days=defaults.get(period or "monthly", 30)), to
 
 
-async def _generate(db, current, report_type: str, fmt: ReportFormat, date_from, date_to, period, params, audit_module="reports"):
+async def _generate(
+    db, current, report_type: str, fmt: ReportFormat, date_from, date_to, period, params,
+    audit_module="reports", http_method="GET", http_path=None,
+):
     service = ReportService(db)
     record = await service.generate(report_type, fmt, date_from, date_to, user=current.user, parameters=params)
 
@@ -54,8 +59,8 @@ async def _generate(db, current, report_type: str, fmt: ReportFormat, date_from,
                "checksum_sha256": record.checksum_sha256, "parameters": params},
         ip_address=current.ip_address,
         user_agent=current.user_agent,
-        http_method="GET",
-        http_path=f"/api/v1/reports/{report_type}",
+        http_method=http_method,
+        http_path=http_path or f"/api/v1/reports/{report_type}",
         http_status=200,
         severity="warning",
     )
@@ -95,6 +100,120 @@ async def operational_report(
         {"period": period, "include_raw_data": include_raw_data},
     )
     return _file_response(record)
+
+
+class EmailReportRequest(BaseModel):
+    report_type: str = Field(pattern="^(operational|management|audit)$")
+    report_format: ReportFormat = Field(alias="format")
+    to_email: EmailStr
+    date_from: datetime | None = Field(None, alias="from")
+    date_to: datetime | None = Field(None, alias="to")
+    period: str | None = Field("monthly", pattern="^(daily|weekly|monthly|quarterly)$")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/email", summary="Generar un reporte y enviarlo por correo mediante n8n")
+async def email_report(body: EmailReportRequest, db: DbSession, current: AuthenticatedUser):
+    """Genera y audita el reporte con el usuario actual y delega el correo a n8n."""
+    required_permission = "audit:export" if body.report_type == "audit" else "reports:export"
+    if not current.can(required_permission):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permisos insuficientes. Requerido: {required_permission}",
+            headers={"X-Required-Permissions": required_permission},
+        )
+
+    webhook_url = settings.N8N_REPORT_EMAIL_WEBHOOK_URL
+    webhook_secret = settings.N8N_REPORT_EMAIL_WEBHOOK_SECRET
+    if not webhook_url or not webhook_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El envío de reportes por correo no está configurado. Configura el webhook de n8n.",
+        )
+
+    start, end = _resolve_range(body.date_from, body.date_to, body.period)
+    if body.report_type == "audit" and (end - start).days > 366:
+        raise HTTPException(status_code=422, detail="El rango máximo para reportes de auditoría es de 366 días")
+
+    params = {"period": body.period} if body.report_type != "audit" else {"scope": "audit_log"}
+    record = await _generate(
+        db, current, body.report_type, body.report_format, start, end, body.period, params,
+        audit_module="audit" if body.report_type == "audit" else "reports",
+        http_method="POST", http_path="/api/v1/reports/email",
+    )
+    file_path = Path(record.file_path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=410, detail="El reporte se generó, pero su archivo no está disponible")
+
+    fields = {
+        "to_email": str(body.to_email),
+        "from_email": settings.SMTP_FROM,
+        "report_title": record.title,
+        "report_id": str(record.id),
+        "report_type": body.report_type,
+        "period_from": start.isoformat(),
+        "period_to": end.isoformat(),
+        "checksum_sha256": record.checksum_sha256 or "",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+            with file_path.open("rb") as report_file:
+                response = await client.post(
+                    webhook_url,
+                    headers={"X-Report-Trigger-Key": webhook_secret},
+                    data=fields,
+                    files={"data": (file_path.name, report_file, MEDIA_TYPES.get(body.report_format.value, "application/octet-stream"))},
+                )
+        response.raise_for_status()
+    except (httpx.HTTPError, OSError) as exc:
+        # El reporte ya quedó generado e inventariado; solo falló la entrega por correo.
+        await AuditService(db).log(
+            module="audit" if body.report_type == "audit" else "reports",
+            action=AuditAction.EXPORT,
+            user_id=current.id,
+            username=current.username,
+            entity="report_email",
+            entity_id=record.id,
+            result=AuditResult.FAILURE,
+            detail=f"Falló la entrega del reporte #{record.id} por correo vía n8n a {body.to_email}",
+            after={"report_id": record.id, "to_email": str(body.to_email), "filename": file_path.name},
+            ip_address=current.ip_address,
+            user_agent=current.user_agent,
+            http_method="POST",
+            http_path="/api/v1/reports/email",
+            http_status=502,
+            severity="error",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"El reporte #{record.id} quedó generado, pero n8n no confirmó el envío del correo. Revisa n8n y vuelve a intentar.",
+        ) from exc
+
+    await AuditService(db).log(
+        module="audit" if body.report_type == "audit" else "reports",
+        action=AuditAction.EXPORT,
+        user_id=current.id,
+        username=current.username,
+        entity="report_email",
+        entity_id=record.id,
+        detail=f"Reporte #{record.id} enviado por correo vía n8n a {body.to_email}",
+        after={"report_id": record.id, "to_email": str(body.to_email), "filename": file_path.name},
+        ip_address=current.ip_address,
+        user_agent=current.user_agent,
+        http_method="POST",
+        http_path="/api/v1/reports/email",
+        http_status=200,
+        severity="warning",
+    )
+
+    return {
+        "status": "sent",
+        "report_id": record.id,
+        "to_email": str(body.to_email),
+        "filename": file_path.name,
+        "message": f"Reporte #{record.id} enviado a {body.to_email}",
+    }
 
 
 @router.get("/management", summary="Reporte gerencial y de cumplimiento (PDF/Word/Excel)")
