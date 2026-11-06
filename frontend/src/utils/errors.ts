@@ -28,6 +28,21 @@ function extractDetail(payload: unknown): string | undefined {
   if (typeof payload === 'string') return payload;
   if (typeof payload !== 'object') return undefined;
   const body = payload as Record<string, unknown>;
+  // Our API intentionally keeps a stable 422 detail and places the useful
+  // Pydantic field messages in `errors`; surface those instead of hiding them.
+  if (Array.isArray(body.errors)) {
+    const validationMessages = body.errors
+      .map((item) => {
+        if (!item || typeof item !== 'object') return '';
+        const validation = item as Record<string, unknown>;
+        const field = typeof validation.field === 'string' ? validation.field : '';
+        const message = typeof validation.message === 'string' ? validation.message : '';
+        if (!message) return '';
+        return field ? `${field}: ${message}` : message;
+      })
+      .filter(Boolean);
+    if (validationMessages.length > 0) return validationMessages.join(' · ');
+  }
   if (typeof body.detail === 'string') return body.detail;
   if (Array.isArray(body.detail)) {
     const msgs = body.detail

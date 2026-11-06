@@ -135,6 +135,8 @@ services:
     volumes:
       # Colocar aquí GeoLite2-City.mmdb (registro gratuito en MaxMind)
       - ./data/geoip:/data:ro
+      # Artefacto local generado por scripts/evaluate_unsw_classifier.py
+      - ./data/models/unsw-nb15:/models:ro
     depends_on:
       redis:
         condition: service_healthy

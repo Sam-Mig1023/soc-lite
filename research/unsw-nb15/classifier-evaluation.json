@@ -1,0 +1,131 @@
+{
+  "experiment": "UNSW-NB15 binary intrusion classification",
+  "created_at_utc": "2026-11-06T04:28:03.650396+00:00",
+  "dataset": "UNSW-NB15",
+  "train_file": "UNSW_NB15_training-set.csv",
+  "test_file": "UNSW_NB15_testing-set.csv",
+  "train_rows": 175341,
+  "test_rows": 82332,
+  "feature_count": 42,
+  "excluded_columns": [
+    "attack_cat",
+    "id",
+    "label"
+  ],
+  "categorical_features": [
+    "proto",
+    "service",
+    "state"
+  ],
+  "model": "RandomForestClassifier",
+  "parameters": {
+    "n_estimators": 120,
+    "max_depth": 24,
+    "min_samples_leaf": 2,
+    "max_features": "sqrt",
+    "class_weight": "balanced_subsample",
+    "random_state": 2026,
+    "decision_threshold": 0.5571548441245866,
+    "threshold_selection": "highest out-of-bag threshold meeting target recall on the training split"
+  },
+  "versions": {
+    "python": "3.12.10",
+    "pandas": "2.3.3",
+    "numpy": "1.26.4",
+    "scikit_learn": "1.9.0",
+    "joblib": "1.5.3"
+  },
+  "train_class_counts": {
+    "normal": 56000,
+    "attack": 119341
+  },
+  "test_class_counts": {
+    "normal": 37000,
+    "attack": 45332
+  },
+  "confusion_matrix": {
+    "true_negative": 31003,
+    "false_positive": 5997,
+    "false_negative": 1480,
+    "true_positive": 43852
+  },
+  "metrics": {
+    "accuracy": 0.909185,
+    "balanced_accuracy": 0.902635,
+    "precision": 0.879697,
+    "recall": 0.967352,
+    "specificity": 0.837919,
+    "f1": 0.921444,
+    "roc_auc": 0.984655,
+    "mean_inference_ms_per_record": 0.009389
+  },
+  "training_oob_threshold_selection": {
+    "target_recall": 0.95,
+    "selected_threshold": 0.5571548441245866,
+    "observed_oob_recall": 0.9500004189674965,
+    "observed_oob_precision": 0.9794476169084171,
+    "oob_records": 175341
+  },
+  "timing_seconds": {
+    "training": 54.531,
+    "full_test_inference": 0.773
+  },
+  "per_attack_category": {
+    "Analysis": {
+      "count": 677,
+      "attack_recall": 0.992614,
+      "mean_attack_probability": 0.949249
+    },
+    "Backdoor": {
+      "count": 583,
+      "attack_recall": 1.0,
+      "mean_attack_probability": 0.961137
+    },
+    "DoS": {
+      "count": 4089,
+      "attack_recall": 0.997799,
+      "mean_attack_probability": 0.967867
+    },
+    "Exploits": {
+      "count": 11132,
+      "attack_recall": 0.992005,
+      "mean_attack_probability": 0.956749
+    },
+    "Fuzzers": {
+      "count": 6062,
+      "attack_recall": 0.775322,
+      "mean_attack_probability": 0.721944
+    },
+    "Generic": {
+      "count": 18871,
+      "attack_recall": 0.999841,
+      "mean_attack_probability": 0.990978
+    },
+    "Normal": {
+      "count": 37000,
+      "attack_recall": 0.162081,
+      "mean_attack_probability": 0.216475
+    },
+    "Reconnaissance": {
+      "count": 3496,
+      "attack_recall": 0.99857,
+      "mean_attack_probability": 0.960718
+    },
+    "Shellcode": {
+      "count": 378,
+      "attack_recall": 0.981481,
+      "mean_attack_probability": 0.897133
+    },
+    "Worms": {
+      "count": 44,
+      "attack_recall": 1.0,
+      "mean_attack_probability": 0.940035
+    }
+  },
+  "notes": [
+    "Model fitted only on the official training CSV; final metrics use the official testing CSV.",
+    "The columns id, label and attack_cat were excluded from model inputs.",
+    "The decision threshold was selected from training out-of-bag predictions to meet the configured recall target, then applied unchanged to the official testing set.",
+    "UNSW-NB15 source/destination IP addresses are not available in these feature CSVs."
+  ]
+}

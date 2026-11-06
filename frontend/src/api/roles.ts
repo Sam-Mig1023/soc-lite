@@ -42,9 +42,22 @@ export async function permissions(): Promise<Permission[]> {
 /** Normaliza las distintas formas del catálogo de permisos a `Permission[]`. */
 export function flattenPermissions(raw: unknown): Permission[] {
   if (Array.isArray(raw)) {
-    return raw
-      .map((item, index) => coercePermission(item, index))
-      .filter((p): p is Permission => p !== null);
+    return raw.flatMap((item, index) => {
+      // FastAPI returns GET /permissions as [{ module, permissions: [...] }].
+      // Flatten this grouped response while retaining the module as a fallback.
+      if (item && typeof item === 'object') {
+        const group = item as Record<string, unknown>;
+        if (typeof group.module === 'string' && Array.isArray(group.permissions)) {
+          return group.permissions
+            .map((permission, permissionIndex) =>
+              coercePermission(permission, permissionIndex, group.module as string),
+            )
+            .filter((permission): permission is Permission => permission !== null);
+        }
+      }
+      const permission = coercePermission(item, index);
+      return permission ? [permission] : [];
+    });
   }
   if (raw && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>;

@@ -1,0 +1,87 @@
+{
+  "name": "SOC-Lite · Ingesta de muestra UNSW-NB15",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "soc-lite/unsw-nb15-alert",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "f9000000-0000-4000-8000-000000000001",
+      "name": "1 · Recibir alerta normalizada",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "soc-lite-unsw-nb15-alert",
+      "notes": "Recibe un único registro ya normalizado del dataset UNSW-NB15 como JSON. La etiqueta original debe ir en raw_payload.dataset_ground_truth para poder compararla luego con el triaje. No enviar el CSV completo a este webhook."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/api/v1/alerts/ingest?auto_triage=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Source-Type",
+              "value": "api"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.body?.alert_fingerprint || $json.body?.external_id || $json.alert_fingerprint || $json.external_id || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body || $json) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "f9000000-0000-4000-8000-000000000002",
+      "name": "2 · Enviar alerta al backend SOC-Lite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        300,
+        300
+      ],
+      "retryOnFail": false,
+      "notes": "Después de importar, asigna una credencial Header Auth con nombre de encabezado X-Ingest-Key y valor igual a INGEST_API_KEY del .env. El backend persiste la alerta y encola el triaje LangChain si rule_level alcanza MIN_SEVERITY_TO_PROCESS."
+    }
+  ],
+  "connections": {
+    "1 · Recibir alerta normalizada": {
+      "main": [
+        [
+          {
+            "node": "2 · Enviar alerta al backend SOC-Lite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f9000000-0000-4000-8000-000000000003",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

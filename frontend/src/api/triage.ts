@@ -15,8 +15,8 @@ import type {
 export async function run(alertId: number, force = false): Promise<TriageResult> {
   return http.post<TriageResult>(`/triage/${alertId}/run`, undefined, {
     params: buildParams({ force }),
-    // El triaje puede tardar varios segundos: se amplía el timeout del cliente (30 s).
-    timeout: 120000,
+    // Debe superar el límite del backend (360 s) para recibir la respuesta final.
+    timeout: 370000,
   });
 }
 

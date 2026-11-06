@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 
-PROMPT_VERSION = "triage_v3"
+PROMPT_VERSION = "triage_v5_hybrid_unsw"
 
 # ----------------------------------------------------------------------
 # System prompt del agente
@@ -39,6 +39,10 @@ mantenimiento generan falsos positivos. Búscalos activamente.
 6. El `risk_score` (0-100) pondera: severidad de la regla (35%), reputación de los indicadores (25%), criticidad \
 del activo afectado (25%) y confianza en tu propio análisis (15%).
 7. Responde EXCLUSIVAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código.
+8. `indicators` solo admite IOCs de tipo ip, domain, url, hash, email o cve; los protocolos/servicios como OSPF, TCP o HTTP van en `reasoning`.
+9. `sla_recommendation` debe ser exactamente inmediata, 1h, 8h o 24h; no uses sinónimos.
+10. Usa únicamente IDs MITRE ATT&CK válidos. No inventes sub-técnicas añadiendo sufijos; si no puedes confirmarlo, devuelve una lista vacía.
+11. Asigna MITRE solo cuando la conducta observada coincida con la técnica. Un flujo OSPF/escaneo de red no demuestra volcado de credenciales (T1003) ni explotación (T1210). Considera T1046 (Network Service Discovery) únicamente si los datos describen descubrimiento/escaneo de servicios; si no hay evidencia suficiente, devuelve una lista vacía.
 
 ESCALA DE VEREDICTOS
 - `true_positive`: actividad maliciosa confirmada o altamente probable.
@@ -60,7 +64,7 @@ FORMATO DE SALIDA (JSON estricto)
   ],
   "mitre_techniques": ["T1110.001"],
   "indicators": [
-    {{"type": "ip|domain|url|hash", "value": "...", "verdict": "malicious|suspicious|clean|unknown", "source": "abuseipdb|virustotal|geoip", "score": 0-100}}
+    {{"type": "ip|domain|url|hash|email|cve", "value": "...", "verdict": "malicious|suspicious|clean|unknown", "source": "abuseipdb|virustotal|geoip", "score": 0-100}}
   ],
   "asset_impact": "Impacto potencial sobre el activo y el negocio",
   "false_positive_hypothesis": "Motivo plausible por el que podría ser un falso positivo, o null",
@@ -92,6 +96,9 @@ USER_TEMPLATE = """ALERTA A TRIAJAR
 ```
 {full_log}
 ```
+
+## Clasificador supervisado (si aplica a UNSW-NB15)
+{dataset_classifier_evidence}
 
 ## Contexto organizacional (calculado por el backend)
 - Alertas del mismo origen en las últimas 24 h: {recent_alerts_same_source}

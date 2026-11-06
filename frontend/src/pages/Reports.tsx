@@ -102,6 +102,16 @@ const FORMAT_ICONS: Record<ReportFormat, JSX.Element> = {
   csv: <FileSpreadsheet size={15} className="text-amber-400" aria-hidden="true" />,
 };
 
+/** Demo accounts use reserved domains such as org.local, which cannot receive email. */
+function defaultReportRecipient(email?: string): string {
+  const value = email?.trim() ?? '';
+  const parts = value.split('@');
+  const domain = (parts[parts.length - 1] ?? '').toLowerCase();
+  const isReserved =
+    domain === 'localhost' || /\.(local|test|example|invalid)$/.test(domain);
+  return isReserved ? '' : value;
+}
+
 /* ------------------------------------------------------------------ */
 /* Página                                                              */
 /* ------------------------------------------------------------------ */
@@ -124,7 +134,7 @@ export function Reports(): JSX.Element {
   }));
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [recipientEmail, setRecipientEmail] = useState(auth.user?.email ?? '');
+  const [recipientEmail, setRecipientEmail] = useState(() => defaultReportRecipient(auth.user?.email));
   const recipientInputRef = useRef<HTMLInputElement>(null);
 
   const definition = useMemo(
@@ -503,7 +513,7 @@ export function Reports(): JSX.Element {
                 aria-describedby="report-recipient-hint"
               />
               <span id="report-recipient-hint" className="mt-1 block text-xs text-slate-500">
-                El archivo se enviará adjunto a esta dirección.
+                Ingresa un correo válido y accesible; las direcciones de demostración como @org.local no reciben correo.
               </span>
             </FilterField>
           </div>

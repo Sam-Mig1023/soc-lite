@@ -47,6 +47,11 @@ def _to_detail(alert: Alert) -> AlertDetail:
     (alias histórico) para que ningún cliente necesite una segunda petición.
     """
     detail = AlertDetail.model_validate(alert)
+    # Do not present model-generated placeholders (e.g. "N/D") as real IOCs.
+    detail.enrichment = [
+        item for item in detail.enrichment
+        if item.indicator.strip().casefold() not in {"n/d", "nd", "n/a", "unknown", "none", "null", ""}
+    ]
     current = alert.current_triage
     if current is not None:
         triage = TriageRead.model_validate(current)
@@ -451,6 +456,7 @@ async def get_enrichment(alert_id: int, db: DbSession, current: AlertReader) -> 
             "queried_at": e.queried_at,
         }
         for e in alert.enrichment
+        if e.indicator.strip().casefold() not in {"n/d", "nd", "n/a", "unknown", "none", "null", ""}
     ]
 
 

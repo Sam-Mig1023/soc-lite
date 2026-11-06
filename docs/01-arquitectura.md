@@ -48,6 +48,13 @@ PostgreSQL          Slack/Telegram   osTicket       Dashboard React
  auditoría)          severidad)
 ```
 
+Para la evaluación con **UNSW-NB15**, el mismo microservicio incorpora opcionalmente un
+clasificador supervisado Random Forest entrenado con el split oficial de entrenamiento.
+El adaptador del dataset excluye `id`, `label` y `attack_cat` de la entrada del modelo;
+LangChain/Ollama aporta la explicación contextual, mientras que la predicción supervisada
+determina el veredicto de esas alertas de benchmark. Si no se instala el artefacto, el
+servicio conserva el triaje LLM habitual.
+
 ### Resultados medibles (objetivo del sistema)
 
 | Indicador | Antes | Después | KPI del sistema |

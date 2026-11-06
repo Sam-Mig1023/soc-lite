@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     OPENAI_TEMPERATURE: float = 0.1
     ALLOW_EXTERNAL_LLM: bool = False
     MAX_AGENT_ITERATIONS: int = 8
-    AGENT_TIMEOUT_SECONDS: int = 90
+    AGENT_TIMEOUT_SECONDS: int = 300
 
     # Inteligencia de amenazas
     VIRUSTOTAL_API_KEY: str | None = None
@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Umbrales de decisión
     AUTO_ESCALATE_RISK: int = 75
     AUTO_CLOSE_FP_CONFIDENCE: float = 0.90
+
+    # Clasificador supervisado opcional entrenado solo con UNSW-NB15 training-set.
+    UNSW_CLASSIFIER_MODEL_PATH: str = "/models/unsw_nb15_random_forest.joblib"
 
 
 @lru_cache

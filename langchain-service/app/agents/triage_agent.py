@@ -14,6 +14,7 @@ Diseño:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -87,6 +88,7 @@ def build_prompt_values(request: TriageRequest) -> dict[str, Any]:
         "dest_ip": alert.dest_ip or "N/D",
         "agent_name": alert.agent_name or ctx.asset_hostname or "N/D",
         "full_log": (alert.full_log or "Sin log disponible")[:4000],
+        "dataset_classifier_evidence": "No aplica: esta alerta no pertenece al protocolo UNSW-NB15.",
         "recent_alerts_same_source": ctx.recent_alerts_same_source,
         "asset_criticality": ctx.asset_criticality,
         "asset_internet_facing": ctx.asset_internet_facing,
@@ -94,6 +96,26 @@ def build_prompt_values(request: TriageRequest) -> dict[str, Any]:
         "is_working_hours": ctx.is_working_hours,
         "allow_external_llm": ctx.policy.get("allow_external_llm", settings.ALLOW_EXTERNAL_LLM),
     }
+
+
+def predict_dataset_flow(request: TriageRequest) -> dict[str, Any] | None:
+    """Classify an UNSW sample when its locally trained artifact is installed."""
+    try:
+        payload = json.loads(request.alert.full_log or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("dataset") != "UNSW-NB15":
+        return None
+    features = payload.get("features")
+    if not isinstance(features, dict):
+        return None
+    try:
+        from app.ml.unsw_classifier import predict_unsw_flow
+
+        return predict_unsw_flow(features)
+    except Exception as exc:
+        logger.warning("Clasificador UNSW-NB15 no disponible; se mantiene triaje LLM: %s", exc)
+        return None
 
 
 # ======================================================================
@@ -122,6 +144,49 @@ def extract_json(text: str) -> dict[str, Any]:
             if depth == 0:
                 return json.loads(cleaned[start : idx + 1])
     raise ValueError("JSON incompleto en la respuesta del modelo")
+
+
+def normalize_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Coerce common Ollama phrasing into the strict SOC-Lite response contract."""
+    normalized = dict(payload)
+    reasoning = normalized.get("reasoning")
+    reasoning_items = list(reasoning) if isinstance(reasoning, list) else []
+
+    # A network service/protocol is useful context, but it is not an IOC type.
+    raw_indicators = normalized.get("indicators", [])
+    raw_indicators = raw_indicators if isinstance(raw_indicators, list) else []
+    allowed_indicator_types = {"ip", "domain", "url", "hash", "email", "cve"}
+    valid_indicators: list[dict[str, Any]] = []
+    for indicator in raw_indicators:
+        if not isinstance(indicator, dict):
+            continue
+        indicator_type = str(indicator.get("type", "")).strip().lower()
+        if indicator_type in allowed_indicator_types:
+            value = str(indicator.get("value", "")).strip().lower()
+            if value in {"n/d", "nd", "n/a", "unknown", "none", "null", ""}:
+                continue
+            valid_indicators.append(indicator)
+            continue
+        value = str(indicator.get("value", "")).strip()
+        if value:
+            reasoning_items.append(
+                f"Servicio/protocolo observado (no es un IOC): {value} ({indicator_type or 'tipo no especificado'})."
+            )
+    normalized["indicators"] = valid_indicators
+
+    # Keep the SLA enum stable while retaining the model's continuous-monitoring note.
+    sla = str(normalized.get("sla_recommendation", "8h")).strip().lower()
+    if sla in {"continuamente", "continua", "continuous", "continuously", "ongoing"}:
+        normalized["sla_recommendation"] = "24h"
+        reasoning_items.append(
+            "La recomendación de supervisión continua se normalizó al SLA permitido de 24h."
+        )
+    elif sla not in {"inmediata", "1h", "8h", "24h"}:
+        normalized["sla_recommendation"] = "8h"
+        reasoning_items.append(f"SLA no reconocido ({sla}); se aplicó el valor permitido de 8h.")
+
+    normalized["reasoning"] = reasoning_items
+    return normalized
 
 
 # ======================================================================
@@ -159,34 +224,52 @@ class TriageAgent:
         started = time.perf_counter()
         tools_used: list[str] = []
         tokens_in = tokens_out = 0
+        dataset_prediction: dict[str, Any] | None = None
 
         try:
+            dataset_prediction = predict_dataset_flow(request)
             agent = self._ensure_agent()
             prompt_values = build_prompt_values(request)
+            if dataset_prediction:
+                prompt_values["dataset_classifier_evidence"] = (
+                    f"Modelo: {dataset_prediction['model_name']}; clase predicha: "
+                    f"{dataset_prediction['predicted_class']}; probabilidad de ataque: "
+                    f"{dataset_prediction['attack_probability']:.4f}. Esta salida procede de un "
+                    "clasificador entrenado solo con UNSW_NB15_training-set.csv; no se expuso "
+                    "la etiqueta real de esta fila. Usa este resultado como señal cuantitativa, "
+                    "sin afirmar que equivale a confirmación humana."
+                )
             messages = TRIAGE_PROMPT.format_messages(**prompt_values)
 
-            if agent == "simple":
-                raw = await self._llm.ainvoke(messages)
-                payload = extract_json(getattr(raw, "content", str(raw)))
+            if dataset_prediction or agent == "simple":
+                raw = await asyncio.wait_for(
+                    self._llm.ainvoke(messages), timeout=settings.AGENT_TIMEOUT_SECONDS
+                )
+                payload = normalize_output_payload(extract_json(getattr(raw, "content", str(raw))))
+                output = TriageOutput.model_validate(payload)
                 usage = getattr(raw, "usage_metadata", {}) or {}
                 tokens_in = usage.get("input_tokens", 0)
                 tokens_out = usage.get("output_tokens", 0)
                 tools_used = []
             else:
                 # El agente ReAct ejecuta el bucle razonamiento → herramienta → observación
-                state = await agent.ainvoke(
-                    {"messages": messages},
-                    config={
-                        "recursion_limit": settings.MAX_AGENT_ITERATIONS * 2,
-                        "configurable": {"thread_id": request.trace_id},
-                    },
+                state = await asyncio.wait_for(
+                    agent.ainvoke(
+                        {"messages": messages},
+                        config={
+                            "recursion_limit": settings.MAX_AGENT_ITERATIONS * 2,
+                            "configurable": {"thread_id": request.trace_id},
+                        },
+                    ),
+                    timeout=settings.AGENT_TIMEOUT_SECONDS,
                 )
                 structured = state.get("structured_response")
                 if structured is not None:
                     output = structured if isinstance(structured, TriageOutput) else TriageOutput.model_validate(structured)
                 else:
                     last = state["messages"][-1]
-                    output = TriageOutput.model_validate(extract_json(getattr(last, "content", str(last))))
+                    payload = normalize_output_payload(extract_json(getattr(last, "content", str(last))))
+                    output = TriageOutput.model_validate(payload)
 
                 # Trazas de uso: qué herramientas se invocaron realmente
                 for message in state.get("messages", []):
@@ -205,13 +288,19 @@ class TriageAgent:
             latency = int((time.perf_counter() - started) * 1000)
             # Ajuste de coherencia: veredicto benigno/FP no puede tener riesgo crítico
             output = self._post_process(output, request)
+            if dataset_prediction:
+                output = self._apply_dataset_prediction(output, dataset_prediction)
 
             return TriageResponse(
                 **output.model_dump(),
                 trace_id=request.trace_id,
-                model=settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else settings.OPENAI_MODEL,
-                provider=settings.LLM_PROVIDER,
-                prompt_version=PROMPT_VERSION,
+                model=(
+                    f"UNSW-RF-v2+{settings.OLLAMA_MODEL if settings.LLM_PROVIDER == 'ollama' else settings.OPENAI_MODEL}"
+                    if dataset_prediction
+                    else settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else settings.OPENAI_MODEL
+                ),
+                provider="hybrid" if dataset_prediction else settings.LLM_PROVIDER,
+                prompt_version="triage_v5_unsw_rf_v2" if dataset_prediction else PROMPT_VERSION,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency,
@@ -222,7 +311,13 @@ class TriageAgent:
         except Exception as exc:
             logger.exception("Fallo del agente de triaje para la alerta %s: %s", request.alert_id, exc)
             latency = int((time.perf_counter() - started) * 1000)
-            return self._heuristic(request, str(exc), latency)
+            fallback = self._heuristic(request, str(exc), latency)
+            if dataset_prediction:
+                self._apply_dataset_prediction(fallback, dataset_prediction)
+                fallback.model = "UNSW-RF-v2+heuristic-fallback"
+                fallback.provider = "hybrid"
+                fallback.prompt_version = "triage_v5_unsw_rf_v2"
+            return fallback
 
     # ------------------------------------------------------------------
     # Coherencia post-LLM (guardarraíles deterministas sobre la salida del modelo)
@@ -244,6 +339,29 @@ class TriageAgent:
             output.recommended_actions = [
                 RecommendedAction(order=1, action="Validar manualmente la alerta en el SIEM", priority="p3")
             ]
+        return output
+
+    @staticmethod
+    def _apply_dataset_prediction(output: TriageOutput, prediction: dict[str, Any]) -> TriageOutput:
+        """Use the supervised classifier for the dataset verdict; retain LLM explanation/actions."""
+        label = int(prediction["predicted_label"])
+        probability = float(prediction["attack_probability"])
+        predicted_class = "attack" if label == 1 else "normal"
+        output.verdict = "suspicious" if label == 1 else "benign"
+        output.risk_score = int(round(probability * 100)) if label == 1 else min(40, int(round(probability * 100)))
+        output.confidence = round(max(probability, 1.0 - probability), 3)
+        if label == 0:
+            output.severity = "info" if probability < 0.15 else "low"
+        else:
+            output.severity = "critical" if probability >= 0.95 else "high" if probability >= 0.80 else "medium"
+        output.reasoning.insert(
+            0,
+            f"UNSW-NB15 Random Forest predijo {predicted_class} con probabilidad de ataque {probability:.3f}; la etiqueta real no se usó como entrada.",
+        )
+        output.summary = (
+            f"Clasificador supervisado: predicción {predicted_class} "
+            f"(probabilidad de ataque {probability:.1%}). Análisis contextual del agente: {output.summary}"
+        )
         return output
 
     # ------------------------------------------------------------------

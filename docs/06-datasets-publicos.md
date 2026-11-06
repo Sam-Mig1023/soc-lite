@@ -36,10 +36,55 @@ indexada) · ❌ roto / no accesible.
 | ✅ **Splunk attack_data** | Splunk Inc. | [github.com/splunk/attack_data](https://github.com/splunk/attack_data) | Apache-2.0 | **>9 GB** por Git LFS; Sysmon, 4688, CrowdStrike… con YAML por técnica; ~2020–2025 | *Replay* en `alerts` con `mitre_technique` ya presente en el YAML |
 
 **Con cautela:** **NSL-KDD** ([unb.ca/cic/datasets/nsl.html](https://www.unb.ca/cic/datasets/nsl.html), ⚠️ no
-comprobada; datos de 1999) y **UNSW-NB15**, cuya página oficial devolvió **HTTP 504** durante la verificación
-([research.unsw.edu.au/projects/unsw-nb15-dataset](https://research.unsw.edu.au/projects/unsw-nb15-dataset) ❌;
-alternativa [UNSWorks](https://unsworks.unsw.edu.au/entities/dataset/4dc0e35c-6196-4c9d-945a-c50b981e5955)).
-También útiles: **Malware-Traffic-Analysis.net** (PCAP + IOCs, ⚠️) y **CTU-13/Stratosphere IPS** (botnet, ⚠️).
+comprobada; datos de 1999) y **UNSW-NB15**: el portal oficial puede fallar intermitentemente; el proyecto ya
+cuenta con los CSV públicos de prueba y el archivo de características descargados desde el recurso compartido
+del dataset ([página del proyecto UNSW](https://research.unsw.edu.au/projects/unsw-nb15-dataset)). La licencia/condiciones
+de redistribución deben confirmarse en la documentación original antes de publicar los CSV. También útiles:
+**Malware-Traffic-Analysis.net** (PCAP + IOCs, ⚠️) y **CTU-13/Stratosphere IPS** (botnet, ⚠️).
+
+### Uso actual de UNSW-NB15 en SOC-Lite
+
+La primera prueba piloto del LLM está registrada en
+[`08-evaluacion-piloto-unsw-nb15.md`](08-evaluacion-piloto-unsw-nb15.md); los resultados del clasificador
+entrenado con el split oficial están en [`09-resultados-unsw-nb15.md`](09-resultados-unsw-nb15.md).
+
+El adaptador `scripts/send_unsw_sample.py` toma filas del `UNSW_NB15_testing-set.csv` y las envía por el
+workflow n8n `soc_lite_unsw_dataset_ingest_workflow.json`. En el protocolo `unsw-nb15-hybrid-v3`,
+`label`, `attack_cat` e `id` quedan fuera de las entradas del clasificador; la verdad terreno se conserva en
+`raw_payload.dataset_ground_truth` para puntuar después. El agente recibe los campos de flujo permitidos y la
+predicción del clasificador entrenado solo con `UNSW_NB15_training-set.csv`, con umbral calibrado en las
+predicciones *out-of-bag* del entrenamiento. El `rule_level=7` es una adaptación
+para que SOC-Lite procese todas las filas, no un campo proporcionado por el dataset. Los CSV no aportan IPs
+de origen/destino, por lo que GeoIP no dispone de un indicador real.
+
+Las primeras alertas exploratorias (#6–#17) expusieron la etiqueta en la regla, descripción, grupo o severidad;
+por ello, sus métricas no deben presentarse como evaluación del modelo. La corrida ciega inicial de 10 filas
+también es preliminar y no es comparable con el clasificador supervisado. El baseline de Random Forest se
+entrena con el split oficial de entrenamiento y se mide en el split oficial de prueba mediante
+`scripts/evaluate_unsw_classifier.py`; SOC-Lite combina su predicción con la explicación de LangChain/Ollama.
+La consulta `scripts/evaluate_unsw_triage.sql` puntúa solo el protocolo `unsw-nb15-hybrid-v3`.
+
+Para entrenar/evaluar el baseline completo y guardar localmente el modelo:
+
+```powershell
+py -m pip install -r .\scripts\requirements-unsw-ml.txt
+py .\scripts\evaluate_unsw_classifier.py
+docker compose up -d --build langchain
+```
+
+El clasificador final se guarda en `data/models/unsw-nb15/` (excluido de Git); las métricas y predicciones
+reproducibles se guardan en `research/unsw-nb15/`. Para enviar una muestra de cinco filas normales y cinco de
+ataque por n8n y SOC-Lite, con la etiqueta oculta y triajes secuenciales:
+
+```powershell
+py .\scripts\send_unsw_sample.py --class both --count 5 --seed 2027
+```
+
+El artefacto entrenado debe estar presente antes de reconstruir LangChain. El workflow 07 debe estar activo en
+n8n y Docker debe seguir levantado; el script también consulta PostgreSQL para serializar los triajes. Repetir
+la misma semilla puede devolver alertas idempotentes. Después de que termine, ejecutar la consulta SQL de
+métricas. La clasificación cuantitativa del artículo debe priorizar la evaluación completa del CSV de prueba;
+la muestra procesada por el LLM sirve para evaluar el recorrido integrado y sus explicaciones.
 
 ---
 
@@ -266,7 +311,7 @@ alerta; etiqueta persistida en `triage_results.human_feedback` + `feedback_comme
 | Fuente | Motivo |
 |---|---|
 | **Alexa Top 1M** | **Descontinuado** (confirmado por Tranco). Usar Tranco o Umbrella Top 1M |
-| **NSL-KDD / UNSW-NB15** | Datos de 1999 y página oficial con **HTTP 504** en la verificación: solo *smoke test* y tras confirmar términos |
+| **NSL-KDD / UNSW-NB15** | NSL-KDD es de 1999; UNSW-NB15 es un dataset de flujos antiguo y su portal puede fallar; confirmar términos y no generalizar métricas de una muestra pequeña |
 | **theZoo / VX-Underground / VirusShare** | Malware vivo y licencia que no cubre las muestras: solo laboratorio aislado |
 | **Kaggle y *mirrors* sin licencia explícita** | Licencia opaca o «research only» (p. ej. Microsoft Malware Prediction): usar la URL primaria del proveedor |
 | **SOREL-20M / MOTIF (muestras)** | Desarmadas y con ToU; **sin benignos** en SOREL ⇒ sesgo severo en clasificadores |

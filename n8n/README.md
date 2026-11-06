@@ -19,6 +19,7 @@ programados de **SLA**, **métricas** y **reportes**.
 | 04 | `soc_lite_metrics_aggregation_workflow.json` | SOC-Lite · 04 · Agregación de métricas diarias y ANALYZE | Schedule diario 00:30 | 10 | Auxiliar |
 | 05 | `soc_lite_report_generation_workflow.json` | SOC-Lite · 05 · Generación de reporte operativo semanal | Schedule lunes 07:00 | 13 | Auxiliar |
 | 06 | `soc_lite_report_email_workflow.json` | SOC-Lite · Envío de reportes por correo desde la interfaz | Webhook interno autenticado | 2 | **Acción del frontend** |
+| 07 | `soc_lite_unsw_dataset_ingest_workflow.json` | SOC-Lite · Ingesta de muestra UNSW-NB15 | Webhook `POST /webhook/soc-lite/unsw-nb15-alert` | 2 | **Dataset público** |
 
 **Dependencias:** todos los workflows escriben/leen en PostgreSQL (`soclite`). El
 workflow 01 depende además del microservicio LangChain (`http://langchain:8001`) y de
@@ -38,7 +39,7 @@ la sección 1 del documento de diseño). Comprobado con los nodos base
 
 1. Entrar en n8n (`https://n8n.org.local` o `http://localhost:5678`).
 2. **Workflows → ⋯ → Import from File** y seleccionar cada `.json`.
-3. Repetir con los seis archivos.
+3. Repetir con los siete archivos. Para probar el dataset, importa y activa también el workflow 07.
 4. **Guardar** cada workflow (aparecerán inactivos).
 
 ### Opción B — CLI (importación por lotes)
@@ -46,7 +47,7 @@ la sección 1 del documento de diseño). Comprobado con los nodos base
 ```bash
 # Dentro del contenedor n8n (o con n8n CLI instalado en el host)
 docker compose exec -T n8n n8n import:workflow --separate --input=/data/n8n/soc-lite
-# (los 6 .json deben estar copiados en /data/n8n/soc-lite)
+# (los 7 .json deben estar copiados en /data/n8n/soc-lite)
 ```
 
 ### Opción C — API pública de n8n
@@ -239,6 +240,7 @@ y un secreto local en `.env`. No pegues el secreto en el chat ni lo subas a GitH
 4) soc_lite_metrics_aggregation_workflow → activar
 5) soc_lite_report_generation_workflow → activar
 6) soc_lite_report_email_workflow → activar (webhook para el botón del frontend)
+7) soc_lite_unsw_dataset_ingest_workflow → activar (webhook para cargar muestras etiquetadas)
 ```
 
 Pasos previos obligatorios:
@@ -248,7 +250,7 @@ Pasos previos obligatorios:
 2. Verificar `/health/ready` del backend y `GET /health` del microservicio LangChain.
 3. Crear las credenciales de la sección 4 y **asignarlas en todos los nodos**.
 4. El `docker-compose.yml` expone `INGEST_API_KEY` del `.env` al contenedor n8n como `SOC_INGEST_KEY`; después de cambiar esa clave, recrear el contenedor n8n.
-5. Importar los seis workflows y **registrar el Error Workflow global**:
+5. Importar los siete workflows y **registrar el Error Workflow global**:
    abrir cada workflow auxiliar (02–05) → **⋯ → Settings → Error Workflow** →
    `SOC-Lite · 01 · Triage automático de alertas (Wazuh/OPNsense → LLM → Ticket → Bitácora)`.
 6. Activar en el orden indicado.
@@ -504,7 +506,8 @@ n8n/
 ├── soc_lite_sla_escalation_workflow.json           ← 03 (Schedule 5 min)
 ├── soc_lite_metrics_aggregation_workflow.json      ← 04 (Schedule 00:30)
 ├── soc_lite_report_generation_workflow.json        ← 05 (Schedule lunes 07:00)
-└── soc_lite_report_email_workflow.json             ← 06 (Webhook interno → SMTP)
+├── soc_lite_report_email_workflow.json             ← 06 (Webhook interno → SMTP)
+└── soc_lite_unsw_dataset_ingest_workflow.json     ← 07 (Webhook dataset UNSW-NB15)
 ```
 
 Todos los JSON están validados sintácticamente

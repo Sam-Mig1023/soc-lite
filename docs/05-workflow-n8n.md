@@ -3,7 +3,8 @@
 > **Ámbito.** Este documento describe la capa de orquestación del SOC-Lite construida en
 > **n8n**: la cadena de triaje automático (Webhook → deduplicación → PostgreSQL →
 > agente LangChain → enrutamiento → notificación → ticket/incidente → bitácora) y los
-> cuatro trabajos programados de soporte (deduplicación, SLA, métricas y reportes).
+> cuatro trabajos programados de soporte (deduplicación, SLA, métricas y reportes), el envío de reportes desde
+> el frontend y la ingesta reproducible del dataset UNSW-NB15.
 >
 > **Documentos normativos con los que se alinea:**
 > [`docs/00-contrato-api.md`](00-contrato-api.md) (contrato de API v1) y
@@ -12,7 +13,7 @@
 > exactamente los de esos dos documentos.
 >
 > **Artefactos:** [`n8n/README.md`](../n8n/README.md) (guía de importación, credenciales y
-> pruebas de humo) y los cinco archivos `n8n/soc_lite_*_workflow.json`.
+> pruebas de humo) y los siete archivos `n8n/soc_lite_*_workflow.json`.
 
 ---
 
@@ -86,6 +87,8 @@ evidencia auditable de cada decisión.
 | **03** | `soc_lite_sla_escalation_workflow.json` | Schedule Trigger | cada 5 min (`*/5 * * * *`) | 11 | `alerts` (estado), `notifications`, `audit_log` |
 | **04** | `soc_lite_metrics_aggregation_workflow.json` | Schedule Trigger | diario 00:30 (`30 0 * * *`) | 10 | `alert_metrics_daily`, `notifications`, `audit_log` |
 | **05** | `soc_lite_report_generation_workflow.json` | Schedule Trigger | lunes 07:00 (`0 7 * * 1`) | 13 | `generated_reports`, `audit_log`, almacenamiento S3/NAS |
+| **06** | `soc_lite_report_email_workflow.json` | Webhook autenticado | solicitud desde el frontend | 2 | envío SMTP del reporte generado |
+| **07** | `soc_lite_unsw_dataset_ingest_workflow.json` | Webhook | por muestra etiquetada | 2 | ingesta en `alerts` y cola de triaje |
 
 ### 2.2 Tablas y vistas utilizadas (según `db/schema.sql`)
 
@@ -1304,7 +1307,7 @@ Wazuh (evento)                                    →  alerts.raw_payload (JSONB
 
 ## 13. Supuestos y decisiones de diseño
 
-1. **Estado de los artefactos.** Los seis JSON son exports de n8n **inactivos**
+1. **Estado de los artefactos.** Los siete JSON son exports de n8n **inactivos**
    (`"active": false`) y sus credenciales llevan el marcador
    `REEMPLAZAR_CON_ID_CREDENCIAL_*` (n8n no puede resolver credenciales de otra instancia).
 2. **Error Workflow por nombre.** n8n referencia el error workflow por **nombre**, no por

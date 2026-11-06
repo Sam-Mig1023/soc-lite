@@ -25,7 +25,14 @@ Wazuh/OPNsense ──webhook──▶ n8n ──▶ LangChain + Ollama ──▶
                             │                └─ AbuseIPDB · VirusTotal · GeoIP │
                             │                   MITRE · memoria de FP         │
                             └──▶ Slack / Telegram / osTicket ◀────────────────┘
+
+UNSW-NB15 (CSV) ──workflow n8n──▶ FastAPI ──▶ clasificador Random Forest + LangChain/Ollama
 ```
+
+Para la evaluación con UNSW-NB15, el Random Forest se ajusta con el split oficial de
+entrenamiento y su salida se pasa al agente LangChain como señal cuantitativa. Las
+columnas de etiqueta, categoría e identificador se excluyen de las entradas predictoras;
+el LLM aporta el análisis contextual y las acciones recomendadas.
 
 | Antes | Después |
 |---|---|

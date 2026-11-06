@@ -206,12 +206,15 @@ class TriageService:
         for indicator in triage.iocs or []:
             if not isinstance(indicator, dict) or not indicator.get("value"):
                 continue
+            indicator_value = str(indicator["value"]).strip()
+            if indicator_value.casefold() in {"n/d", "nd", "n/a", "unknown", "none", "null"}:
+                continue
             exists = (
                 await self.db.execute(
                     select(EnrichmentData.id).where(
                         EnrichmentData.alert_id == alert.id,
                         EnrichmentData.provider == str(indicator.get("source", "llm_tool")),
-                        EnrichmentData.indicator == str(indicator["value"]),
+                        EnrichmentData.indicator == indicator_value,
                         EnrichmentData.indicator_type == str(indicator.get("type", "ip")),
                     )
                 )
@@ -222,7 +225,7 @@ class TriageService:
                 EnrichmentData(
                     alert_id=alert.id,
                     provider=str(indicator.get("source", "llm_tool"))[:48],
-                    indicator=str(indicator["value"])[:512],
+                    indicator=indicator_value[:512],
                     indicator_type=str(indicator.get("type", "ip"))[:24],
                     verdict=str(indicator.get("verdict", "unknown"))[:24],
                     score=Decimal(str(indicator["score"])) if indicator.get("score") is not None else None,
