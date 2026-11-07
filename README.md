@@ -34,6 +34,8 @@ entrenamiento y su salida se pasa al agente LangChain como señal cuantitativa. 
 columnas de etiqueta, categoría e identificador se excluyen de las entradas predictoras;
 el LLM aporta el análisis contextual y las acciones recomendadas.
 
+**Dataset público utilizado:** [UNSW-NB15 — UNSW Canberra](https://research.unsw.edu.au/projects/unsw-nb15-dataset). Se utilizaron los archivos oficiales `UNSW_NB15_training-set.csv` y `UNSW_NB15_testing-set.csv`; el dataset se descarga desde la página de UNSW.
+
 | Antes | Después |
 |---|---|
 | MTTT de 2–8 horas | **30 s – 5 min** |
